@@ -1,4 +1,5 @@
 ﻿using System.Data.Entity;
+using System.Web.Http;
 using System.Web.Mvc;
 using System.Web.Routing;
 using Kudu.Web.Models;
@@ -13,7 +14,16 @@ namespace Kudu.Web
             filters.Add(new HandleErrorAttribute());
         }
 
-        public static void RegisterRoutes(RouteCollection routes)
+        private static void RegisterDefaultRoute(RouteCollection routes)
+        {
+            routes.MapRoute(
+                "Default", // Route name
+                "{controller}/{action}/{slug}", // URL with parameters
+                new { controller = "Application", action = "Index", slug = UrlParameter.Optional } // Parameter defaults
+            );
+        }
+
+        public static void RegisterViewRoutes(RouteCollection routes)
         {
             routes.IgnoreRoute("{resource}.axd/{*pathInfo}");
 
@@ -49,12 +59,17 @@ namespace Kudu.Web
             routes.MapRoute("Configuration",
                             "configuration/{slug}",
                             new { controller = "Settings", action = "Index" });
+        }
 
-            routes.MapRoute(
-                "Default", // Route name
-                "{controller}/{action}/{slug}", // URL with parameters
-                new { controller = "Application", action = "Index", slug = UrlParameter.Optional } // Parameter defaults
-            );
+        private static void RegisterApiRoutes(RouteCollection routes)
+        {
+            routes.MapHttpRoute("Application-API-Route",
+                        "api/application/{slug}/{action}",
+                        new { controller = "Application", action = "Get" });
+
+            routes.MapHttpRoute("Applications-API-Route",
+                                "api/applications/{action}/{slug}",
+                                new { controller = "Applications", action = "All", slug= RouteParameter.Optional });
         }
 
         [SuppressMessage("Microsoft.Performance", "CA1822:MarkMembersAsStatic", Justification = "By design")]
@@ -63,7 +78,10 @@ namespace Kudu.Web
             AreaRegistration.RegisterAllAreas();
 
             RegisterGlobalFilters(GlobalFilters.Filters);
-            RegisterRoutes(RouteTable.Routes);
+            RegisterViewRoutes(RouteTable.Routes);
+            RegisterApiRoutes(RouteTable.Routes);
+            RegisterDefaultRoute(RouteTable.Routes);
         }
+
     }
 }

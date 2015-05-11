@@ -3,6 +3,7 @@ using System.Configuration;
 using System.IO;
 using System.Linq;
 using System.Web;
+using System.Web.Http;
 using Kudu.Client.Infrastructure;
 using Kudu.SiteManagement;
 using Kudu.SiteManagement.Certificates;
@@ -10,8 +11,11 @@ using Kudu.SiteManagement.Configuration;
 using Kudu.SiteManagement.Context;
 using Kudu.Web.Infrastructure;
 using Kudu.Web.Models;
+using Newtonsoft.Json.Converters;
+using Newtonsoft.Json.Serialization;
 using Ninject;
 using Ninject.Web.Common;
+using WebApiContrib.IoC.Ninject;
 
 [assembly: WebActivator.PreApplicationStartMethod(typeof(Kudu.Web.App_Start.Startup), "Start")]
 [assembly: WebActivator.ApplicationShutdownMethodAttribute(typeof(Kudu.Web.App_Start.Startup), "Stop")]
@@ -47,11 +51,21 @@ namespace Kudu.Web.App_Start
         private static IKernel CreateKernel()
         {
             var kernel = new StandardKernel();
+
             kernel.Bind<Func<IKernel>>().ToMethod(ctx => () => new Bootstrapper().Kernel);
             kernel.Bind<IHttpModule>().To<HttpApplicationInitializationHttpModule>();
 
             RegisterServices(kernel);
+            SetupWebAip(kernel);
             return kernel;
+        }
+
+        private static void SetupWebAip(StandardKernel kernel)
+        {
+            var configuration = GlobalConfiguration.Configuration;
+            configuration.DependencyResolver = new NinjectResolver(kernel);
+            configuration.Formatters.JsonFormatter.SerializerSettings.ContractResolver = new CamelCasePropertyNamesContractResolver();
+            configuration.Formatters.JsonFormatter.SerializerSettings.Converters.Add(new StringEnumConverter { CamelCaseText = true });
         }
 
         /// <summary>

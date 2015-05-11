@@ -89,24 +89,25 @@ namespace Kudu.SiteManagement
                 // IIS.Site devSite = iis.Sites[devSiteName];
 
                 var site = new Site();
-                site.ServiceBindings = GetSiteUrls(serviceSite);
-                site.SiteBindings = GetSiteUrls(mainSite);
+                site.ServiceBindings = GetSiteUrls(serviceSite, SiteType.Service);
+                site.SiteBindings = GetSiteUrls(mainSite, SiteType.Live);
                 return site;
             }
         }
 
-        private IList<KuduBinding> GetSiteUrls(IIS.Site site)
+        private IList<KuduBinding> GetSiteUrls(IIS.Site site, SiteType siteType)
         {
             if (site == null)
             {
                 return null; 
             }
-            return site.Bindings.Select(MapBinding).ToList();
+            return site.Bindings.Select(b => MapBinding(b, siteType)).ToList();
         }
 
-        private KuduBinding MapBinding(Binding binding)
+        private KuduBinding MapBinding(Binding binding, SiteType siteType)
         {
             KuduBinding kuduBinding = new KuduBinding();
+            kuduBinding.SiteType = siteType;
             kuduBinding.Host = binding.Host;
             kuduBinding.Scheme = binding.Protocol.Equals("http", StringComparison.OrdinalIgnoreCase) ? UriScheme.Http : UriScheme.Https;
             kuduBinding.Port = binding.EndPoint.Port;
@@ -158,7 +159,7 @@ namespace Kudu.SiteManagement
                     // Commit the changes to iis
                     iis.CommitChanges();
 
-                    IList<KuduBinding> serviceBindings = GetSiteUrls(serviceSite);
+                    IList<KuduBinding> serviceBindings = GetSiteUrls(serviceSite, SiteType.Service);
 
                     // Wait for the site to start
                     await OperationManager.AttemptAsync(() => WaitForSiteAsync(serviceBindings.First().ToString()));
@@ -170,7 +171,7 @@ namespace Kudu.SiteManagement
                     return new Site
                     {
                         ServiceBindings = serviceBindings,
-                        SiteBindings = GetSiteUrls(site)
+                        SiteBindings = GetSiteUrls(site, SiteType.Live)
                     };
                 }
                 catch
