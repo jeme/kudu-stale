@@ -93,6 +93,7 @@ a.site-item {
     vertical-align: middle;
 }
 
+<<<<<<< HEAD
 
 .input-group-button {
     padding: 0;
@@ -116,6 +117,8 @@ a.site-item {
   max-width: 13px;
   max-height: 15px;
 }
+=======
 .table td.actions {
     text-align: right;
 }
+>>>>>>> master

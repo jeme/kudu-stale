@@ -3,6 +3,8 @@ using System.Web.Mvc;
 using System.Web.Routing;
 using Kudu.Web.Models;
 using System.Diagnostics.CodeAnalysis;
+using System.Web.Http;
+using System.Web.UI.WebControls;
 
 namespace Kudu.Web
 {
@@ -55,6 +57,14 @@ namespace Kudu.Web
                 "{controller}/{action}/{slug}", // URL with parameters
                 new { controller = "Application", action = "Index", slug = UrlParameter.Optional } // Parameter defaults
             );
+
+            //            config.MapHttpAttributeRoutes();
+
+            //routes.MapHttpRoute(
+            //    name: "DefaultApi",
+            //    routeTemplate: "api/{controller}/{id}",
+            //    defaults: new { id = RouteParameter.Optional }
+            //);
         }
 
         [SuppressMessage("Microsoft.Performance", "CA1822:MarkMembersAsStatic", Justification = "By design")]
@@ -64,6 +74,8 @@ namespace Kudu.Web
 
             RegisterGlobalFilters(GlobalFilters.Filters);
             RegisterRoutes(RouteTable.Routes);
+            //GlobalConfiguration.Configure(WebApiConfig.Register);
+            
         }
     }
 }
