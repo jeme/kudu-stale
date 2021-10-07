@@ -1,0 +1,39 @@
+@import "../../theme";
+
+:host {
+  display: flex;
+  flex-grow: 1;
+
+  .application-list {
+
+    flex-basis: 400px;
+    flex-grow: 0;
+    flex-shrink: 0;
+
+    background: $light-background;
+
+    .header {
+      display: flex;
+      padding: 16px;
+
+      .spacer {
+        flex-grow: 1;
+      }
+    }
+
+    a[mat-list-item] {
+      height: 52px;
+      text-decoration: none;
+
+      border-left: 5px solid transparent;
+
+      &.active {
+        border-left-color: red;
+      }
+
+      &:hover {
+        background-color: #ffffff;
+      }
+    }
+  }
+}

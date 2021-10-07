@@ -1,0 +1,11 @@
+:host {
+  padding: 20px;
+
+  flex-grow: 1;
+  flex-shrink: 1;
+
+  .fill {
+    flex-grow: 1;
+  }
+
+}

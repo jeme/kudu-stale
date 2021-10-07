@@ -1,0 +1,29 @@
+<h1>{{ this.application?.name }}</h1>
+<hr>
+
+<nav mat-tab-nav-bar>
+  <a mat-tab-link routerLink="bindings" routerLinkActive #rla="routerLinkActive" [active]="rla.isActive">
+    <mat-icon>language</mat-icon>
+    <span class="fill">Bindings</span>
+  </a>
+
+  <a mat-tab-link routerLink="deployments" routerLinkActive #rla2="routerLinkActive" [active]="rla2.isActive">
+    <mat-icon>system_update_alt</mat-icon>
+    <span class="fill">Deployments</span>
+  </a>
+
+  <a mat-tab-link routerLink="configuration" routerLinkActive #rla3="routerLinkActive" [active]="rla3.isActive">
+    <mat-icon>settings</mat-icon>
+    <span class="fill">Configuration</span>
+  </a>
+
+<!--  <a mat-tab-link *ngFor="let link of links"-->
+<!--     (click)="activeLink = link"-->
+<!--     [active]="activeLink == link"> {{link}} </a>-->
+<!--  <a mat-tab-link disabled>Disabled Link</a>-->
+</nav>
+<router-outlet (activate)="this.onOutletActivated($event)"></router-outlet>
+<pre>
+{{ this.application | json }}
+
+</pre>

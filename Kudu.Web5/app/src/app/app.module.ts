@@ -8,12 +8,31 @@ import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatToolbarModule } from '@angular/material/toolbar';
+import { MatListModule } from '@angular/material/list';
+import {MatTabsModule} from '@angular/material/tabs';
+import {MatInputModule} from '@angular/material/input';
+import {MatSnackBarModule} from '@angular/material/snack-bar';
+
+import { CoreModule } from "./core/core.module";
+
 import { ApplicationsComponent } from './applications/applications.component';
+
+import { ApplicationDetailsComponent } from './application-details/application-details.component';
+import { CreateApplicationComponent } from './create-application/create-application.component';
+import { BindingDetailsComponent } from './apps/binding-details/binding-details.component';
+import { ConfigurationDetailsComponent } from './apps/configuration-details/configuration-details.component';
+import { DeploymentDetailsComponent } from './apps/deployment-details/deployment-details.component';
+import {FormsModule} from "@angular/forms";
 
 @NgModule({
   declarations: [
     AppComponent,
-    ApplicationsComponent
+    ApplicationsComponent,
+    ApplicationDetailsComponent,
+    CreateApplicationComponent,
+    BindingDetailsComponent,
+    ConfigurationDetailsComponent,
+    DeploymentDetailsComponent
   ],
   imports: [
     BrowserModule,
@@ -23,6 +42,13 @@ import { ApplicationsComponent } from './applications/applications.component';
     MatIconModule,
     MatToolbarModule,
     MatButtonModule,
+    MatListModule,
+    MatTabsModule,
+    MatInputModule,
+    MatSnackBarModule,
+
+    CoreModule,
+    FormsModule
   ],
   providers: [],
   bootstrap: [AppComponent]

@@ -1,1 +1,28 @@
-<p>applications works!</p>
+<div class="application-list">
+
+  <div class="header">
+    <h1>Applications</h1>
+    <span class="spacer"></span>
+
+    <a mat-mini-fab color="primary" aria-label="Add a new Kudu application" routerLink="create">
+      <mat-icon>add</mat-icon>
+    </a>
+<!--    <button mat-icon-button  color="primary" aria-label="Example icon button with a vertical three dot icon">-->
+<!--      <mat-icon>add_circle</mat-icon>-->
+<!--    </button>-->
+<!--    <button mat-icon-button  color="primary" aria-label="Example icon button with a vertical three dot icon">-->
+<!--      <mat-icon>add_circle_outline</mat-icon>-->
+<!--    </button>-->
+  </div>
+
+  <mat-list>
+    <a mat-list-item *ngFor="let app of this.applications" routerLink="view/{{app.name}}" routerLinkActive="active">
+      <!-- TODO: find something open-source similar to https://icon-library.com/icon/web-apps-icon-17.html or make one self.-->
+      <mat-icon mat-list-icon svgIcon="web_application_2"> </mat-icon>
+      <div mat-line>{{app.name}}</div>
+      <div mat-line>{{app.url}}</div>
+    </a>
+  </mat-list>
+
+</div>
+<router-outlet></router-outlet>

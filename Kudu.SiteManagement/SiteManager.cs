@@ -94,28 +94,25 @@ namespace Kudu.SiteManagement
                 // IIS.Site devSite = iis.Sites[devSiteName];
 
                 var site = new Site();
-                site.ServiceBindings = GetSiteUrls(serviceSite);
+                site.ServiceBindings = GetSiteUrls(serviceSite, SiteType.Service);
                 site.SiteBindings = GetSiteUrls(mainSite);
                 return site;
             }
         }
 
-        private IList<KuduBinding> GetSiteUrls(IIS.Site site)
+        private IList<KuduBinding> GetSiteUrls(IIS.Site site, SiteType type = SiteType.Live)
         {
-            if (site == null)
-            {
-                return null; 
-            }
-            return site.Bindings.Select(MapBinding).ToList();
+            return site?.Bindings.Select(b => MapBinding(b, type)).ToList();
         }
 
-        private KuduBinding MapBinding(Binding binding)
+        private KuduBinding MapBinding(Binding binding, SiteType type)
         {
             KuduBinding kuduBinding = new KuduBinding();
             kuduBinding.Host = binding.Host;
             kuduBinding.Scheme = binding.Protocol.Equals("http", StringComparison.OrdinalIgnoreCase) ? UriScheme.Http : UriScheme.Https;
             kuduBinding.Port = binding.EndPoint.Port;
             kuduBinding.Ip = binding.EndPoint.Address.ToString();
+            kuduBinding.SiteType = type;
 
             //NOTE: A KuduBinding also has information about certificate name etc...
             //      and SNI which we could try and fetch...
@@ -163,7 +160,7 @@ namespace Kudu.SiteManagement
                     // Commit the changes to iis
                     iis.CommitChanges();
 
-                    IList<KuduBinding> serviceBindings = GetSiteUrls(serviceSite);
+                    IList<KuduBinding> serviceBindings = GetSiteUrls(serviceSite, SiteType.Service);
 
                     // Wait for the site to start
                     await OperationManager.AttemptAsync(() => WaitForSiteAsync(serviceBindings.First().ToString()));
@@ -179,7 +176,9 @@ namespace Kudu.SiteManagement
                         SiteBindings = GetSiteUrls(site)
                     };
                 }
-                catch
+#pragma warning disable 168
+                catch (Exception exignore)
+#pragma warning restore 168
                 {
                     try
                     {
