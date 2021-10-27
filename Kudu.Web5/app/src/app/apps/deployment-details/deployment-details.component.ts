@@ -13,17 +13,26 @@ export class DeploymentDetailsComponent implements OnInit, OnDestroy {
 
   subscription: Subscription;
 
+  msBuildArgs: string = "";
+
   constructor(private currentApplication: CurrentApplicationService) {
-    this.subscription = currentApplication.onApplicationChanged.subscribe(value => {
-      this.application = value;
+    this.application = currentApplication.application;
+    this.onApplicationChanged();
+
+    this.subscription = currentApplication.onApplicationChanged.subscribe(_ => {
+      this.application = currentApplication.application;
+      this.onApplicationChanged();
     });
   }
 
-  ngOnInit(): void {
 
-  }
+  ngOnInit(): void {  }
 
   ngOnDestroy(): void{
     this.subscription.unsubscribe();
+  }
+
+  private onApplicationChanged() {
+    this.msBuildArgs = this.application?.settings.SCM_BUILD_ARGS || "";
   }
 }

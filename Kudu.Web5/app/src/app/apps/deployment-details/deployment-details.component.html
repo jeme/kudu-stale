@@ -4,7 +4,7 @@
   </mat-card-title-group>
   <mat-card-content>
     <mat-form-field appearance="outline" class="repository-field">
-      <input matInput type="text" readonly [value]="application?.repository?.gitUrl">
+      <input matInput type="text" readonly [value]="this.application?.repository?.gitUrl">
       <button mat-icon-button matSuffix [attr.aria-label]="'Copy to clipboard'">
         <mat-icon>content_copy</mat-icon>
       </button>
@@ -17,14 +17,10 @@
     <mat-card-title>MSBuild command line arguments</mat-card-title>
   </mat-card-title-group>
   <mat-card-content>
-    <mat-form-field appearance="outline" class="repository-field">
+    <mat-form-field appearance="outline" class="full-field">
 
-      <input matInput type="text" readonly [value]="application?.repository?.gitUrl">
-      <button mat-icon-button matSuffix [attr.aria-label]="'Copy to clipboard'">
-        <mat-icon>content_copy</mat-icon>
-      </button>
+      <input matInput type="text" [(ngModel)]="this.msBuildArgs">
     </mat-form-field>
-
     <p>
       If not using a custom deployment script, this gets added to the MSBuild commandline.
       You could for example use: <code>/P:Configuration=Release</code>

@@ -1,17 +1,34 @@
-import { Component, OnInit } from '@angular/core';
+import {Component, OnDestroy, OnInit} from '@angular/core';
 import {IApplication} from "../../core/services/ApplicationsService";
+import {Subscription} from "rxjs";
+import {CurrentApplicationService} from "../CurrentApplicationService";
 
 @Component({
   selector: 'kudu-properties-details',
   templateUrl: './properties-details.component.html',
   styleUrls: ['./properties-details.component.scss']
 })
-export class PropertiesDetailsComponent implements OnInit {
+export class PropertiesDetailsComponent implements OnInit, OnDestroy {
   application?: IApplication;
+  subscription: Subscription;
 
-  constructor() { }
+  constructor(private currentApplication: CurrentApplicationService) {
+    this.application = currentApplication.application;
+    this.onApplicationChanged();
 
-  ngOnInit(): void {
+    this.subscription = currentApplication.onApplicationChanged.subscribe(_ => {
+      this.application = currentApplication.application;
+      this.onApplicationChanged();
+    });
+  }
+
+  ngOnInit(): void {  }
+
+  ngOnDestroy(): void{
+    this.subscription.unsubscribe();
+  }
+
+  private onApplicationChanged() {
   }
 
 }

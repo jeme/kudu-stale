@@ -37,7 +37,13 @@ export interface IApplication {
   repository: {
     type: 'None' | 'Git' | 'Mercurial';
     gitUrl?: string;
-  }
+  };
+
+  settings: IMap<string>
+}
+
+export interface IMap<T> {
+  [key: string]: T;
 }
 
 export interface IBinding {

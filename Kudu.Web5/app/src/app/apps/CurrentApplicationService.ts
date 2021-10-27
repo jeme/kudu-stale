@@ -4,10 +4,13 @@ import {Subject} from "rxjs";
 
 @Injectable()
 export class CurrentApplicationService {
-  private applicationChanged = new Subject<IApplication>();
+  public application?: IApplication;
+
+  private applicationChanged = new Subject();
   public onApplicationChanged = this.applicationChanged.asObservable();
 
   update(application: IApplication) {
-    this.applicationChanged.next(application);
+    this.application = application;
+    this.applicationChanged.next();
   }
 }

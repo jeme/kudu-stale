@@ -8,8 +8,7 @@ using Kudu.SiteManagement;
 using Kudu.SiteManagement.Certificates;
 using Kudu.SiteManagement.Configuration;
 using Kudu.SiteManagement.Context;
-using Kudu.Web.Infrastructure;
-using Kudu.Web.Models;
+using Kudu.Web5.Infrastructure;
 using Kudu.Web5.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -26,6 +25,7 @@ using ISettingsService = Kudu.Web5.Services.ISettingsService;
 
 namespace Kudu.Web5
 {
+
     public class Startup
     {
         public Startup(IConfiguration configuration)
@@ -43,7 +43,7 @@ namespace Kudu.Web5
             services.AddControllersWithViews().AddNewtonsoftJson(options =>
             {
                 options.SerializerSettings.Converters.Add(new StringEnumConverter());
-                options.SerializerSettings.ContractResolver = new CamelCasePropertyNamesContractResolver();
+                options.SerializerSettings.ContractResolver = new CamelCaseExceptDictionaryKeysResolver();
                 JsonConvert.DefaultSettings = ()=>options.SerializerSettings;
             });
             // In production, the Angular files will be served from this directory
@@ -78,7 +78,7 @@ namespace Kudu.Web5
             services.AddTransient<IKuduContext, KuduContext>();
 
             services.AddScoped<IApplicationService, ApplicationService>();
-            services.AddScoped<IWeb5SettingsService, DefaultSettingsService>();
+            services.AddScoped<ISettingsService, SettingsService>();
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -156,6 +156,15 @@ namespace Kudu.Web5
         public BasicAuthCredentialProvider BasicAuthCredential => new BasicAuthCredentialProvider("", "");
         public IEnumerable<IBindingConfiguration> Bindings { get; }
         public IEnumerable<ICertificateStoreConfiguration> CertificateStores { get; }
+    }
+    class CamelCaseExceptDictionaryKeysResolver : CamelCasePropertyNamesContractResolver
+    {
+        protected override JsonDictionaryContract CreateDictionaryContract(Type objectType)
+        {
+            JsonDictionaryContract contract = base.CreateDictionaryContract(objectType);
+            contract.DictionaryKeyResolver = propertyName => propertyName;
+            return contract;
+        }
     }
 
     public class KuduSettings

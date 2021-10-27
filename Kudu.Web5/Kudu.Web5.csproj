@@ -31,7 +31,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Kudu.Web\Kudu.Web.csproj" />
+    <Compile Include="..\Common\Constants.cs" Link="Infrastructure\Constants.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Kudu.SiteManagement\Kudu.SiteManagement.csproj" />
   </ItemGroup>
 
   <Target Name="DebugEnsureNodeEnv" BeforeTargets="Build" Condition=" '$(Configuration)' == 'Debug' And !Exists('$(SpaRoot)node_modules') ">
