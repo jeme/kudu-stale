@@ -10,6 +10,7 @@ using Kudu.SiteManagement.Configuration;
 using Kudu.SiteManagement.Context;
 using Kudu.Web.Infrastructure;
 using Kudu.Web.Models;
+using Kudu.Web5.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.HttpsPolicy;
@@ -21,6 +22,7 @@ using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Serialization;
+using ISettingsService = Kudu.Web5.Services.ISettingsService;
 
 namespace Kudu.Web5
 {
@@ -76,6 +78,7 @@ namespace Kudu.Web5
             services.AddTransient<IKuduContext, KuduContext>();
 
             services.AddScoped<IApplicationService, ApplicationService>();
+            services.AddScoped<IWeb5SettingsService, DefaultSettingsService>();
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

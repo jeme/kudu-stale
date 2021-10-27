@@ -28,7 +28,7 @@ export class CreateApplicationComponent implements OnInit {
     try {
       await this.applicationsService.post(app);
     } catch (error){
-      this.snackBar.open(error, 'OK', {
+      this.snackBar.open(JSON.stringify(error), 'OK', {
         horizontalPosition: "center",
         verticalPosition: "top"
       });

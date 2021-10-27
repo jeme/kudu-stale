@@ -17,12 +17,14 @@ import { CoreModule } from "./core/core.module";
 
 import { ApplicationsComponent } from './applications/applications.component';
 
-import { ApplicationDetailsComponent } from './application-details/application-details.component';
+import { ApplicationDetailsComponent } from './apps/application-details/application-details.component';
 import { CreateApplicationComponent } from './create-application/create-application.component';
 import { BindingDetailsComponent } from './apps/binding-details/binding-details.component';
 import { ConfigurationDetailsComponent } from './apps/configuration-details/configuration-details.component';
 import { DeploymentDetailsComponent } from './apps/deployment-details/deployment-details.component';
 import {FormsModule} from "@angular/forms";
+import {PropertiesDetailsComponent} from "./apps/properties-details/properties-details.component";
+import {MatCardModule} from "@angular/material/card";
 
 @NgModule({
   declarations: [
@@ -32,7 +34,8 @@ import {FormsModule} from "@angular/forms";
     CreateApplicationComponent,
     BindingDetailsComponent,
     ConfigurationDetailsComponent,
-    DeploymentDetailsComponent
+    DeploymentDetailsComponent,
+    PropertiesDetailsComponent
   ],
   imports: [
     BrowserModule,
@@ -46,6 +49,7 @@ import {FormsModule} from "@angular/forms";
     MatTabsModule,
     MatInputModule,
     MatSnackBarModule,
+    MatCardModule,
 
     CoreModule,
     FormsModule

@@ -11,6 +11,7 @@ using Kudu.SiteManagement.Context;
 using Kudu.Web.Infrastructure;
 using Kudu.Web.Models;
 using Newtonsoft.Json.Linq;
+using ISettingsService = Kudu.Web5.Services.IWeb5SettingsService;
 
 namespace Kudu.Web5.Controllers
 {
@@ -23,19 +24,22 @@ namespace Kudu.Web5.Controllers
         private readonly IApplicationService _applicationService;
         private readonly ICertificateSearcher _certificates;
         private readonly ICredentialProvider _credentialProvider;
+        private readonly ISettingsService _settingsService;
 
         public ApplicationsController(
             KuduEnvironment environment,
             IKuduContext context,
             IApplicationService applicationService,
             ICertificateSearcher certificates, 
-            ICredentialProvider credentialProvider)
+            ICredentialProvider credentialProvider,
+            ISettingsService settingsService)
         {
             _environment = environment;
             _context = context;
             _applicationService = applicationService;
             _certificates = certificates;
             _credentialProvider = credentialProvider;
+            _settingsService = settingsService;
         }
 
 
@@ -63,6 +67,7 @@ namespace Kudu.Web5.Controllers
             ICredentials credentials = _credentialProvider.GetCredentials();
             JObject entity = JObject.FromObject(app);
             entity["repository"] = JObject.FromObject(await app.GetRepositoryInfo(credentials));
+            entity["settings"] = JObject.FromObject(await _settingsService.GetSettings(name));
             return entity;
         }
 

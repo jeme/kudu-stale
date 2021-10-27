@@ -141,3 +141,7 @@ $altTheme: ( primary: $theme-primary, accent: $theme-accent, warn: $theme-warn, 
     font-family: 'Roboto';
   }
 }
+
+.mat-card-title {
+  font-size: 16px;
+}
