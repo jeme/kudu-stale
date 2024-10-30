@@ -65,14 +65,10 @@ namespace Kudu.TestHarness
             if (site != null)
             {
                 TestTracer.Trace("{0} Site already exists at {1}. Reusing site", operationName, site.PrimarySiteBinding);
-
                 TestTracer.Trace("{0} Reset existing site content", operationName);
                 await siteManager.ResetSiteContent(applicationName);
-
                 RunAgainstCustomKuduUrlIfRequired(site);
-
-                var appManager = new ApplicationManager(siteManager, site, applicationName)
-                {
+                var appManager = new ApplicationManager(siteManager, site, applicationName) {
                     SitePoolIndex = siteIndex
                 };
 
@@ -124,7 +120,7 @@ namespace Kudu.TestHarness
         {
             if (!string.IsNullOrWhiteSpace(KuduUtils.CustomKuduUrl))
             {
-                site.ServiceUrls = new List<string> { KuduUtils.CustomKuduUrl };
+                site.ServiceBindings = new List<KuduBinding> { KuduBinding.Parse(KuduUtils.CustomKuduUrl) };
             }
         }
 

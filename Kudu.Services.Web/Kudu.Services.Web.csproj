@@ -16,7 +16,7 @@
     <IISExpressAnonymousAuthentication />
     <IISExpressWindowsAuthentication />
     <IISExpressUseClassicPipelineMode />
-    <TargetFrameworkVersion>v4.6</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <TargetFrameworkProfile />
     <UseGlobalApplicationHostFile />
     <Use64BitIISExpress />
@@ -208,6 +208,7 @@
       <Link>Properties\CommonAssemblyInfo.cs</Link>
     </Compile>
     <Compile Include="App_Start\TraceDeprecatedActionAttribute.cs" />
+    <Compile Include="Infrastructure\BackgroundTask.cs" />
     <Compile Include="SafeOnePerRequestHttpModule.cs" />
     <Compile Include="Infrastructure\BackgroundTask.cs" />
     <Compile Include="Infrastructure\HttpHandlerRouteHandler.cs" />

@@ -170,7 +170,7 @@ namespace Kudu.SiteManagement
 
                     // Set initial ScmType state to LocalGit
                     var credentials = _context.Configuration.BasicAuthCredential.GetCredentials();
-                    var settings = new RemoteDeploymentSettingsManager(serviceUrls.First() + "api/settings");
+                    var settings = new RemoteDeploymentSettingsManager(serviceBindings.First() + "api/settings");
                     await settings.SetValue(SettingsKeys.ScmType, ScmType.LocalGit);
 
                     return new Site

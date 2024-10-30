@@ -7,7 +7,6 @@ namespace Kudu.SiteManagement
     public struct KuduBinding : IFormattable
     {
         public SiteType SiteType { get; set; }
-
         public int Port { get; set; }
         public UriScheme Scheme { get; set; }
         public string Ip { get; set; }

@@ -22,8 +22,7 @@ namespace Kudu.Web.Models
             };
         }
 
-        public ApplicationViewModel(IApplication application, IKuduContext context,
-            IEnumerable<Certificate> certificates)
+        public ApplicationViewModel(IApplication application, IKuduContext context, IEnumerable<Certificate> certificates)
             : this()
         {
             //Certificates = certificates;

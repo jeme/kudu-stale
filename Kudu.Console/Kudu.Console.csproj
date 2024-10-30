@@ -10,7 +10,7 @@
     <AssemblyName>kudu</AssemblyName>
     <Platform>x86</Platform>
     <PlatformTarget>x86</PlatformTarget>
-    <TargetFrameworkVersion>v4.6</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <TargetFrameworkProfile />
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
