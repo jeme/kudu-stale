@@ -5,6 +5,8 @@ namespace Kudu.Contracts.Jobs
 {
     public class JobSettings : Dictionary<string, object>
     {
+        public const string JobSettingsFileName = "settings.job";
+
         public T GetSetting<T>(string key, T defaultValue = default(T))
         {
             object value;
@@ -29,7 +31,6 @@ namespace Kudu.Contracts.Jobs
                 return GetSetting(JobSettingsKeys.IsSingleton, false);
             }
         }
-
         public TimeSpan GetStoppingWaitTime(long defaultTime)
         {
             return TimeSpan.FromSeconds(GetSetting(JobSettingsKeys.StoppingWaitTime, defaultTime));
@@ -39,5 +40,11 @@ namespace Kudu.Contracts.Jobs
         {
             return GetSetting(JobSettingsKeys.IsInPlace, defaultValue);
         }
+
+        public string GetSchedule()
+        {
+            return GetSetting<string>(JobSettingsKeys.Schedule);
+        }
+
     }
 }

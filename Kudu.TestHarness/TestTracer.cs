@@ -18,13 +18,41 @@ namespace Kudu.TestHarness
                 message = messageFormat;
             }
 
-            message = message.Replace("\n", "\n\t");
-            System.Diagnostics.Trace.WriteLine(String.Format(CultureInfo.CurrentCulture, "{0}: {1}", messageDateTime, message));
+            message = String.Format(CultureInfo.CurrentCulture, "{0}Z {1}", messageDateTime.ToUniversalTime().ToString("s"), message.Replace("\n", "\n\t"));
+
+            var context = TestContext.Current;
+            var strb = context != null ? context.Traces : null;
+            if (strb != null)
+            {
+                lock (strb)
+                {
+                    strb.AppendLine(message);
+                }
+            }
+            else
+            {
+                System.Diagnostics.Trace.WriteLine(message);
+            }
+        }
+
+        public static string GetTraceString()
+        {
+            var context = TestContext.Current;
+            var strb = context != null ? context.Traces : null;
+            if (strb != null)
+            {
+                lock (strb)
+                {
+                    return strb.ToString();
+                }
+            }
+
+            return String.Empty;
         }
 
         public static void Trace(string messageFormat, params object[] args)
         {
-            Trace(DateTime.Now, messageFormat, args);
+            Trace(DateTime.UtcNow, messageFormat, args);
         }
 
         public static void TraceDeploymentLog(ApplicationManager appManager, string id)

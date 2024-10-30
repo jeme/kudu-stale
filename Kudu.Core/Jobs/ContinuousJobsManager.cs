@@ -2,45 +2,30 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
-using System.Threading;
 using Kudu.Contracts.Jobs;
 using Kudu.Contracts.Settings;
 using Kudu.Core.Infrastructure;
 using Kudu.Core.Tracing;
+using System.Net;
+using System.Threading.Tasks;
+using Kudu.Contracts.Tracing;
 
 namespace Kudu.Core.Jobs
 {
-    public class ContinuousJobsManager : JobsManagerBase<ContinuousJob>, IContinuousJobsManager, IDisposable
+    public class ContinuousJobsManager : JobsManagerBase<ContinuousJob>, IContinuousJobsManager
     {
         private const string StatusFilesSearchPattern = ContinuousJobStatus.FileNamePrefix + "*";
-
-        private const int TimeoutUntilMakingChanges = 5 * 1000;
-        private const int CheckForWatcherTimeout = 30 * 1000;
+        private const string Localhost = "127.0.0.1";
+        private const string HttpScheme = "http";
 
         private readonly Dictionary<string, ContinuousJobRunner> _continuousJobRunners = new Dictionary<string, ContinuousJobRunner>(StringComparer.OrdinalIgnoreCase);
 
-        private HashSet<string> _updatedJobs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        private readonly object _lockObject = new object();
-
-        private Timer _makeChangesTimer;
-        private Timer _startFileWatcherTimer;
-        private FileSystemWatcher _fileSystemWatcher;
-
-        private bool _makingChanges;
-
-        public ContinuousJobsManager(ITraceFactory traceFactory, IEnvironment environment, IDeploymentSettingsManager settings, IAnalytics analytics)
-            : base(traceFactory, environment, settings, analytics, Constants.ContinuousPath)
+        public ContinuousJobsManager(string basePath, ITraceFactory traceFactory, IEnvironment environment, IDeploymentSettingsManager settings, IAnalytics analytics, IEnumerable<string> excludedJobsNames = null)
+            : base(traceFactory, environment, settings, analytics, Constants.ContinuousPath, basePath, excludedJobsNames)
         {
-            _makeChangesTimer = new Timer(OnMakeChanges);
-            _startFileWatcherTimer = new Timer(StartWatcher);
-            _startFileWatcherTimer.Change(0, Timeout.Infinite);
-        }
-
-        public override IEnumerable<ContinuousJob> ListJobs()
-        {
-            return ListJobsInternal();
+            RegisterExtraEventHandlerForFileChange(OnJobChanged);
         }
 
         public override ContinuousJob GetJob(string jobName)
@@ -59,16 +44,55 @@ namespace Kudu.Core.Jobs
             ContinuousJob continuousJob = GetJob(jobName);
             if (continuousJob == null)
             {
-                throw new JobNotFoundException();
+                throw new JobNotFoundException($"Cannot find '{jobName}' continuous job");
             }
 
             ContinuousJobRunner continuousJobRunner;
             if (!_continuousJobRunners.TryGetValue(continuousJob.Name, out continuousJobRunner))
             {
-                throw new InvalidOperationException("Missing job runner for an existing job - " + jobName);
+                throw new JobNotFoundException($"Missing job runner for '{jobName}' continuous job");
             }
 
-            continuousJobRunner.EnableJob(continuousJob);
+            continuousJobRunner.EnableJob();
+        }
+
+        public async Task<HttpResponseMessage> HandleRequest(string jobName, string path, HttpRequestMessage request)
+        {
+            using (var client = new HttpClient())
+            {
+                var jobRunner = GetJobRunner(jobName);
+                var forwardRequest = GetForwardRequest(jobRunner.WebJobPort, path, request);
+                return await client.SendAsync(forwardRequest);
+            }
+        }
+
+        public static HttpRequestMessage GetForwardRequest(int port, string path, HttpRequestMessage original)
+        {
+            var cloneUriBuilder = new UriBuilder(HttpScheme, Localhost, port)
+            {
+                Path = path,
+                // Uri has a ? leading the query string, while UriBuilder doesn't expect a leading ?
+                // If we don't trim it, we'll endup with ?? in the URL
+                Query = original.RequestUri.Query.Trim('?')
+            };
+
+            var clone = new HttpRequestMessage(original.Method, cloneUriBuilder.Uri);
+
+            if (original.Method != HttpMethod.Get)
+            {
+                clone.Content = original.Content;
+            }
+
+            original.Headers.Aggregate(clone.Headers, (a, b) =>
+            {
+                if (!b.Key.Equals("HOST", StringComparison.OrdinalIgnoreCase))
+                {
+                    a.Add(b.Key, b.Value);
+                }
+                return a;
+            });
+
+            return clone;
         }
 
         private ContinuousJobRunner GetJobRunner(string jobName)
@@ -76,21 +100,18 @@ namespace Kudu.Core.Jobs
             ContinuousJobRunner continuousJobRunner;
             if (!_continuousJobRunners.TryGetValue(jobName, out continuousJobRunner))
             {
-                throw new JobNotFoundException();
+                throw new JobNotFoundException($"Missing job runner for '{jobName}' continuous job");
             }
             return continuousJobRunner;
         }
 
         protected override void OnShutdown()
         {
-            lock (_lockObject)
-            {
-                StopWatcher();
+            JobsWatcher.Stop();
 
-                foreach (ContinuousJobRunner continuousJobRunner in _continuousJobRunners.Values)
-                {
-                    continuousJobRunner.StopJob(isShutdown: true);
-                }
+            foreach (ContinuousJobRunner continuousJobRunner in _continuousJobRunners.Values)
+            {
+                continuousJobRunner.StopJob(isShutdown: true);
             }
         }
 
@@ -140,7 +161,7 @@ namespace Kudu.Core.Jobs
                 // Try to delete file, it'll be deleted if no one holds a lock on it
                 // That way we know the status file is obsolete
                 if (String.Equals(statusFileInstanceId, instanceId, StringComparison.OrdinalIgnoreCase)
-                    || !TryDelete(statusFile))
+                    || !TryDelete(job, statusFile))
                 {
                     // If we couldn't delete the file, we know it holds the status of an actual instance holding it
                     var continuousJobStatus = GetStatus<ContinuousJobStatus>(statusFile) ?? ContinuousJobStatus.Initializing;
@@ -159,11 +180,12 @@ namespace Kudu.Core.Jobs
             job.DetailedStatus = stringBuilder.ToString();
         }
 
-        private static bool TryDelete(string statusFile)
+        private bool TryDelete(ContinuousJob job, string statusFile)
         {
             try
             {
-                FileSystemHelpers.DeleteFileSafe(statusFile);
+                FileSystemHelpers.DeleteFile(statusFile);
+                Analytics.JobEvent(job.Name, string.Format("Delete stale status file {0}", statusFile), job.JobType, string.Empty);
                 return true;
             }
             catch
@@ -177,58 +199,36 @@ namespace Kudu.Core.Jobs
             return BuildVfsUrl("{0}/{1}".FormatInvariant(jobName, ContinuousJobLogger.JobLogFileName));
         }
 
-        private void OnMakeChanges(object state)
+        private void OnJobChanged(string jobName)
         {
-            HashSet<string> updatedJobs;
-
-            lock (_lockObject)
+            ContinuousJob continuousJob = GetJob(jobName);
+            if (continuousJob == null || !String.IsNullOrEmpty(continuousJob.Error))
             {
-                if (_makingChanges)
-                {
-                    _makeChangesTimer.Change(TimeoutUntilMakingChanges, Timeout.Infinite);
-                    return;
-                }
-
-                _makingChanges = true;
-
-                updatedJobs = _updatedJobs;
-                _updatedJobs = new HashSet<string>();
+                RemoveJob(jobName);
             }
-
-            foreach (string updatedJobName in updatedJobs)
+            else
             {
-                try
-                {
-                    ContinuousJob continuousJob = GetJob(updatedJobName);
-                    if (continuousJob == null || !String.IsNullOrEmpty(continuousJob.Error))
-                    {
-                        RemoveJob(updatedJobName);
-                    }
-                    else
-                    {
-                        RefreshJob(continuousJob);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TraceFactory.GetTracer().TraceError(ex);
-                }
+                RefreshJob(continuousJob, logRefresh: !JobsWatcher.FirstTimeMakingChanges);
             }
-
-            _makingChanges = false;
         }
 
-        private void RefreshJob(ContinuousJob continuousJob)
+        private void RefreshJob(ContinuousJob continuousJob, bool logRefresh)
         {
             ContinuousJobRunner continuousJobRunner;
             if (!_continuousJobRunners.TryGetValue(continuousJob.Name, out continuousJobRunner))
             {
-                continuousJobRunner = new ContinuousJobRunner(continuousJob, Environment, Settings, TraceFactory, Analytics);
+                continuousJobRunner = new ContinuousJobRunner(continuousJob, JobsBinariesPath, Environment, Settings, TraceFactory, Analytics);
                 _continuousJobRunners.Add(continuousJob.Name, continuousJobRunner);
+            }
+            else
+            {
+                // job may change due to network transient.  In such case,
+                // we may lose and need to re-acquire the instance status file lock.
+                continuousJobRunner.ResetLockedStatusFile();
             }
 
             JobSettings jobSettings = continuousJob.Settings;
-            continuousJobRunner.RefreshJob(continuousJob, jobSettings);
+            continuousJobRunner.RefreshJob(continuousJob, jobSettings, logRefresh);
         }
 
         private void RemoveJob(string updatedJobName)
@@ -245,133 +245,10 @@ namespace Kudu.Core.Jobs
             _continuousJobRunners.Remove(updatedJobName);
         }
 
-        private void StartWatcher(object state)
+        protected override IEnumerable<string> ListJobNames(bool forceRefreshCache)
         {
-            try
-            {
-                lock (_lockObject)
-                {
-                    // Check if there is a directory we can listen on
-                    if (!FileSystemHelpers.DirectoryExists(JobsBinariesPath))
-                    {
-                        // If not check again in 30 seconds
-                        _startFileWatcherTimer.Change(CheckForWatcherTimeout, Timeout.Infinite);
-                        return;
-                    }
-
-                    // Start file system watcher
-                    _fileSystemWatcher = new FileSystemWatcher(JobsBinariesPath);
-                    _fileSystemWatcher.Created += OnChanged;
-                    _fileSystemWatcher.Changed += OnChanged;
-                    _fileSystemWatcher.Deleted += OnChanged;
-                    _fileSystemWatcher.Renamed += OnChanged;
-                    _fileSystemWatcher.Error += OnError;
-                    _fileSystemWatcher.NotifyFilter = NotifyFilters.CreationTime | NotifyFilters.DirectoryName | NotifyFilters.FileName |
-                                                      NotifyFilters.LastWrite;
-                    _fileSystemWatcher.IncludeSubdirectories = true;
-                    _fileSystemWatcher.EnableRaisingEvents = true;
-
-                    // Refresh all jobs
-                    IEnumerable<ContinuousJob> continuousJobs = ListJobs();
-                    IEnumerable<string> continuousJobsNames = _continuousJobRunners.Keys.Union(continuousJobs.Select(j => j.Name));
-                    foreach (string continuousJobName in continuousJobsNames)
-                    {
-                        MarkJobUpdated(continuousJobName);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Analytics.UnexpectedException(ex);
-
-                // Retry in 30 seconds.
-                _startFileWatcherTimer.Change(CheckForWatcherTimeout, Timeout.Infinite);
-            }
-        }
-
-        private void OnError(object sender, ErrorEventArgs e)
-        {
-            Exception ex = e.GetException();
-            TraceFactory.GetTracer().TraceError(ex.ToString());
-            ResetWatcher();
-        }
-
-        private void ResetWatcher()
-        {
-            DisposeWatcher();
-
-            _startFileWatcherTimer.Change(CheckForWatcherTimeout, Timeout.Infinite);
-        }
-
-        private void DisposeWatcher()
-        {
-            if (_fileSystemWatcher != null)
-            {
-                _fileSystemWatcher.EnableRaisingEvents = false;
-                _fileSystemWatcher.Dispose();
-                _fileSystemWatcher = null;
-            }
-        }
-
-        private void StopWatcher()
-        {
-            DisposeWatcher();
-            _startFileWatcherTimer.Change(Timeout.Infinite, Timeout.Infinite);
-        }
-
-        private void OnChanged(object sender, FileSystemEventArgs e)
-        {
-            string path = e.FullPath;
-            if (path != null && path.Length > JobsBinariesPath.Length)
-            {
-                path = path.Substring(JobsBinariesPath.Length).TrimStart(Path.DirectorySeparatorChar);
-                int firstSeparator = path.IndexOf(Path.DirectorySeparatorChar);
-                string jobName = firstSeparator >= 0 ? path.Substring(0, firstSeparator) : path;
-                if (!String.IsNullOrWhiteSpace(jobName))
-                {
-                    MarkJobUpdated(jobName);
-                }
-            }
-        }
-
-        private void MarkJobUpdated(string jobName)
-        {
-            _updatedJobs.Add(jobName);
-            _makeChangesTimer.Change(TimeoutUntilMakingChanges, Timeout.Infinite);
-        }
-
-        public void Dispose()
-        {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-
-        protected virtual void Dispose(bool disposing)
-        {
-            // HACK: Next if statement should be removed once ninject wlll not dispose this class
-            // Since ninject automatically calls dispose we currently disable it
-            if (disposing)
-            {
-                return;
-            }
-            // End of code to be removed
-
-            if (disposing)
-            {
-                if (_startFileWatcherTimer != null)
-                {
-                    _startFileWatcherTimer.Dispose();
-                    _startFileWatcherTimer = null;
-                }
-
-                DisposeWatcher();
-
-                if (_makeChangesTimer != null)
-                {
-                    _makeChangesTimer.Dispose();
-                    _makeChangesTimer = null;
-                }
-            }
+            IEnumerable<ContinuousJob> continuousJobs = ListJobs(forceRefreshCache);
+            return _continuousJobRunners.Keys.Union(continuousJobs.Select(j => j.Name));
         }
     }
 }

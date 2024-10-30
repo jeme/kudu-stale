@@ -2,7 +2,9 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Ionic.BZip2;
 using Kudu.Contracts.Settings;
+using Kudu.Core.Helpers;
 using Kudu.Core.Infrastructure;
 
 namespace Kudu.Core.Deployment.Generator
@@ -10,9 +12,8 @@ namespace Kudu.Core.Deployment.Generator
     public class ExternalCommandFactory
     {
         public const string KuduSyncCommand = "kudusync";
-        public const string PostDeploymentActionsCommand = "postdeployment";
 
-        internal const string StarterScriptName = "starter.cmd";
+        internal static string StarterScriptName = OSDetector.IsOnWindows() ? "starter.cmd" : "starter.sh";
 
         private IEnvironment _environment;
         private IDeploymentSettingsManager _deploymentSettings;
@@ -25,33 +26,32 @@ namespace Kudu.Core.Deployment.Generator
             _repositoryPath = repositoryPath;
         }
 
-        public Executable BuildExternalCommandExecutable(string workingDirectory, string deploymentTargetPath, ILogger logger)
+        public Executable BuildExternalCommandExecutable(string workingDirectory, string deploymentTargetPath, ILogger logger, string targetFramework = null)
         {
             string sourcePath = _repositoryPath;
             string targetPath = deploymentTargetPath;
 
-            var exe = BuildCommandExecutable(StarterScriptPath, workingDirectory, _deploymentSettings.GetCommandIdleTimeout(), logger);
+            var exe = BuildCommandExecutable(StarterScriptPath, workingDirectory, _deploymentSettings.GetCommandIdleTimeout(), logger, targetFramework);
             UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.SourcePath, sourcePath, logger);
             UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.TargetPath, targetPath, logger);
-            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.PostDeploymentActionsCommandKey, PostDeploymentActionsCommand, logger);
-            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.PostDeploymentActionsDirectoryKey, PostDeploymentActionsDir, logger);
             UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.SelectNodeVersionCommandKey, SelectNodeVersionCommand, logger);
             UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.SelectPythonVersionCommandKey, SelectPythonVersionCommand, logger);
             UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.WebJobsDeployCommandKey, WebJobsDeployCommand, logger);
-            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.KreClr, Constants.KreDefaultClr, logger);
-            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.KreBitness, KreBitness, logger);
-            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.KreNugetApiUrl, Constants.KreDefaultNugetApiUrl, logger);
-            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.KvmPath, KvmPath, logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.GoWebConfigTemplate, GoWebConfigTemplate, logger);
+            // this script takes in two param, target folder path and output file path
+            // what it does is, it assume immediate sub folder of targer folder are all name with version
+            // and this script is trying to get the folder name that with largest version name
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.SelectLatestVersionCommandKey, SelectLatestVersionCommand, logger);
 
             bool isInPlace = false;
             string project = _deploymentSettings.GetValue(SettingsKeys.Project);
             if (!String.IsNullOrEmpty(project))
             {
-                isInPlace = PathUtility.PathsEquals(Path.Combine(sourcePath, project), targetPath);
+                isInPlace = PathUtilityFactory.Instance.PathsEquals(Path.Combine(sourcePath, project), targetPath);
             }
             else
             {
-                isInPlace = PathUtility.PathsEquals(sourcePath, targetPath);
+                isInPlace = PathUtilityFactory.Instance.PathsEquals(sourcePath, targetPath);
             }
 
             if (isInPlace)
@@ -65,17 +65,24 @@ namespace Kudu.Core.Deployment.Generator
             return exe;
         }
 
-        public Executable BuildCommandExecutable(string commandPath, string workingDirectory, TimeSpan idleTimeout, ILogger logger)
+        public Executable BuildCommandExecutable(string commandPath, string workingDirectory, TimeSpan idleTimeout, ILogger logger, string targetFramework = null)
         {
             // Creates an executable pointing to cmd and the working directory being
             // the repository root
             var exe = new Executable(commandPath, workingDirectory, idleTimeout);
             exe.AddDeploymentSettingsAsEnvironmentVariables(_deploymentSettings);
             UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.WebRootPath, _environment.WebRootPath, logger);
-            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.MSBuildPath, PathUtility.ResolveMSBuildPath(), logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.MSBuildPath, PathUtilityFactory.Instance.ResolveMSBuildPath(), logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.MSBuild15Dir, PathUtilityFactory.Instance.ResolveMSBuild15Dir(), logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.MSBuild16Dir, PathUtilityFactory.Instance.ResolveMSBuild16Dir(targetFramework), logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.MSBuild1670Dir, PathUtilityFactory.Instance.ResolveLatestMSBuildDir(), logger);
             UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.KuduSyncCommandKey, KuduSyncCommand, logger);
             UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.NuGetExeCommandKey, NuGetExeCommand, logger);
-            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.NpmJsPathKey, PathUtility.ResolveNpmJsPath(), logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.NpmJsPathKey, PathUtilityFactory.Instance.ResolveNpmJsPath(), logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.DnvmPath, DnvmPath, logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.GypMsvsVersion, Constants.VCVersion, logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.VCTargetsPath, PathUtilityFactory.Instance.ResolveVCTargetsPath(), logger);
+            UpdateToDefaultIfNotSet(exe, WellKnownEnvironmentVariables.VCInstallDir140, PathUtilityFactory.Instance.ResolveVCInstallDirPath(), logger);
 
             exe.SetHomePath(_environment);
 
@@ -83,26 +90,6 @@ namespace Kudu.Core.Deployment.Generator
             string path = System.Environment.GetEnvironmentVariable("PATH");
             exe.EnvironmentVariables["PATH"] = path;
 
-            // Add the msbuild path and git path to the %PATH% so more tools are available
-            var toolsPaths = new List<string> {
-                Path.GetDirectoryName(PathUtility.ResolveMSBuildPath()),
-                Path.GetDirectoryName(PathUtility.ResolveGitPath()),
-                Path.GetDirectoryName(PathUtility.ResolveVsTestPath()),
-                Path.GetDirectoryName(PathUtility.ResolveSQLCmdPath()),
-                _environment.ScriptPath
-            };
-
-            toolsPaths.AddRange(PathUtility.ResolveNodeNpmPaths());
-            toolsPaths.AddRange(new[]
-            {
-                PathUtility.ResolveBowerPath(),
-                PathUtility.ResolveGruntPath(),
-                PathUtility.ResolveGulpPath()
-            }.Where(p => !String.IsNullOrEmpty(p)).Select(Path.GetDirectoryName));
-
-            toolsPaths.Add(PathUtility.ResolveNpmGlobalPrefix());
-
-            exe.PrependToPath(toolsPaths);
             return exe;
         }
 
@@ -111,15 +98,6 @@ namespace Kudu.Core.Deployment.Generator
             get
             {
                 return Path.Combine(_environment.ScriptPath, "nuget.exe");
-            }
-        }
-
-        private string PostDeploymentActionsDir
-        {
-            get
-            {
-                var defaultPath = Path.Combine(_environment.DeploymentToolsPath, "PostDeploymentActions");
-                return _deploymentSettings.GetPostDeploymentActionsDir(defaultPath);
             }
         }
 
@@ -152,24 +130,27 @@ namespace Kudu.Core.Deployment.Generator
             }
         }
 
-        private string KvmPath
+        private string DnvmPath
         {
             get
             {
-                return Path.Combine(_environment.ScriptPath, "kvm.ps1");
+                return Path.Combine(_environment.ScriptPath, "dnvm.ps1");
             }
         }
 
-        private static string KreBitness
+        private string GoWebConfigTemplate
         {
             get
             {
-                var bitness = System.Environment.GetEnvironmentVariable(WellKnownEnvironmentVariables.SiteBitness);
-                if (bitness == null)
-                {
-                    return System.Environment.Is64BitProcess ? "x64" : "x86";
-                }
-                return bitness.Equals(Constants.X64Bit, StringComparison.OrdinalIgnoreCase) ? "x64" : "x86";
+                return Path.Combine(_environment.ScriptPath, "go.web.config.template");
+            }
+        }
+
+        private string SelectLatestVersionCommand
+        {
+            get
+            {
+                return Path.Combine(_environment.ScriptPath, "selectLatestVersion.ps1");
             }
         }
 

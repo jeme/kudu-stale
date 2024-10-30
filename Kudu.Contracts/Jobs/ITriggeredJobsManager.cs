@@ -2,10 +2,12 @@
 {
     public interface ITriggeredJobsManager : IJobsManager<TriggeredJob>
     {
-        void InvokeTriggeredJob(string jobName, string arguments);
+        System.Uri InvokeTriggeredJob(string jobName, string arguments, string trigger);
 
         TriggeredJobHistory GetJobHistory(string jobName, string etag, out string currentETag);
 
         TriggeredJobRun GetJobRun(string jobName, string runId);
+
+        TriggeredJobRun GetLatestJobRun(string jobName);
     }
 }

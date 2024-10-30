@@ -6,6 +6,8 @@ using System.Linq;
 using System.Text;
 using Kudu.Contracts.Settings;
 using Kudu.Contracts.Tracing;
+using Kudu.Core.Deployment;
+using Kudu.Core.Helpers;
 using Kudu.Core.Infrastructure;
 using Kudu.Core.Tracing;
 
@@ -16,10 +18,10 @@ namespace Kudu.Core.SourceControl.Git
     /// </summary>
     public class GitExeRepository : IGitRepository
     {
-        private const string RemoteAlias = "external";
+        internal const string RemoteAlias = "origin";
 
         // From CIT experience, this is most common flakiness issue with github.com
-        private static readonly string[] RetriableFetchFailures =
+        private static readonly string[] RetryableFetchFailures =
         {
             "Unknown SSL protocol error in connection",
             "The requested URL returned error: 403 while accessing",
@@ -32,6 +34,7 @@ namespace Kudu.Core.SourceControl.Git
         private readonly GitExecutable _gitExe;
         private readonly ITraceFactory _tracerFactory;
         private readonly IDeploymentSettingsManager _settings;
+        private readonly IEnvironment _environment;
 
         public GitExeRepository(IEnvironment environment, IDeploymentSettingsManager settings, ITraceFactory profilerFactory)
         {
@@ -40,6 +43,7 @@ namespace Kudu.Core.SourceControl.Git
             _settings = settings;
             SkipPostReceiveHookCheck = false;
             _gitExe.SetHomePath(environment);
+            _environment = environment;
         }
 
         public string CurrentId
@@ -58,7 +62,7 @@ namespace Kudu.Core.SourceControl.Git
         public RepositoryType RepositoryType
         {
             get { return RepositoryType.Git; }
-        }
+        } 
 
         public bool SkipPostReceiveHookCheck
         {
@@ -118,14 +122,18 @@ namespace Kudu.Core.SourceControl.Git
             {
                 Execute(tracer, "init");
 
-                Execute(tracer, "config core.autocrlf true");
+                Execute(tracer, "config core.autocrlf {0}", OSDetector.IsOnWindows() ? "true" : "false");
 
                 // This speeds up git operations like 'git checkout', especially on slow drives like in Azure
                 Execute(tracer, "config core.preloadindex true");
 
                 Execute(tracer, @"config user.name ""{0}""", _settings.GetGitUsername());
-
                 Execute(tracer, @"config user.email ""{0}""", _settings.GetGitEmail());
+
+                // This is needed to make lfs work
+                Execute(tracer, @"config filter.lfs.clean ""git-lfs clean %f""");
+                Execute(tracer, @"config filter.lfs.smudge ""git-lfs smudge %f""");
+                Execute(tracer, @"config filter.lfs.required true");
 
                 using (tracer.Step("Configure git server"))
                 {
@@ -134,6 +142,8 @@ namespace Kudu.Core.SourceControl.Git
                 }
 
                 // to disallow browsing to this folder in case of in-place repo
+                // since system.web/authorization/deny does not deny access to static files, the mispelled closing element <configuration>
+                // in web.config will result to 500 when accessing (in a way preventing all access)
                 using (tracer.Step("Create deny users for .git folder"))
                 {
                     string content = "<?xml version=\"1.0\"" + @"?>
@@ -169,12 +179,28 @@ fi" + "\n";
                 {
                     FileSystemHelpers.EnsureDirectory(Path.GetDirectoryName(PostReceiveHookPath));
 
-                    string content = @"#!/bin/sh
-read i
-echo $i > pushinfo
-" + KnownEnvironment.KUDUCOMMAND + "\n";
-
-                    File.WriteAllText(PostReceiveHookPath, content);
+                    //#!/bin/sh
+                    //read i
+                    //echo $i > pushinfo
+                    //KnownEnvironment.KUDUCOMMAND
+                    StringBuilder sb = new StringBuilder();
+                    sb.AppendLine("#!/bin/sh");
+                    sb.AppendLine("read i");
+                    sb.AppendLine("echo $i > pushinfo");
+                    if (OSDetector.IsOnWindows())
+                    {
+                        sb.AppendLine(KnownEnvironment.KUDUCOMMAND);
+                        FileSystemHelpers.WriteAllText(PostReceiveHookPath, sb.ToString());
+                    }
+                    else
+                    {
+                        sb.AppendLine("/usr/bin/mono " + KnownEnvironment.KUDUCOMMAND);
+                        FileSystemHelpers.WriteAllText(PostReceiveHookPath, sb.ToString().Replace("\r\n", "\n"));
+                        using (tracer.Step("Non-Windows environment, granting 755 permission to post-receive hook file"))
+                        {
+                            PermissionHelper.Chmod("755", PostReceiveHookPath, _environment, _settings, NullLogger.Instance);
+                        }
+                    }
                 }
 
                 // NOTE: don't add any new init steps after creating the post receive hook,
@@ -264,46 +290,40 @@ echo $i > pushinfo
         public void FetchWithoutConflict(string remote, string branchName)
         {
             ITracer tracer = _tracerFactory.GetTracer();
+
+            TryUpdateRemote(remote, RemoteAlias, branchName, tracer);
+
+            string fetchCommand = @"fetch {0} --progress";
+            if (this.IsEmpty() && _settings.AllowShallowClones())
+            {
+                // If it's the initial fetch and the setting allows it, we do a shallow fetch so that we omit all the history, keeping
+                // our repo small. In subsequent fetches, we can't use the --depth flag as that would further
+                // trim the repo, preventing us from redeploying old deployments
+                fetchCommand += " --depth 1";
+            }
+
             try
             {
-                TryUpdateRemote(remote, RemoteAlias, branchName, tracer);
-
-                string fetchCommand = @"fetch {0} --progress";
-                if (this.IsEmpty() && _settings.AllowShallowClones())
-                {
-                    // If it's the initial fetch and the setting allows it, we do a shallow fetch so that we omit all the history, keeping
-                    // our repo small. In subsequent fetches, we can't use the --depth flag as that would further
-                    // trim the repo, preventing us from redeploying old deployments
-                    fetchCommand += " --depth 1";
-                }
-
-                try
-                {
-                    ExecuteGenericGitCommandWithRetryAndCatchingWellKnownGitErrors(() => Execute(tracer, fetchCommand, RemoteAlias));
-                }
-                catch (CommandLineException exception)
-                {
-                    // Check if the fetch failed because the remote repository hasn't been set up as yet.
-                    string branchNotFoundMessage = "fatal: Couldn't find remote ref";
-                    string exceptionMessage = exception.Message ?? String.Empty;
-                    if (exceptionMessage.StartsWith(branchNotFoundMessage, StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new BranchNotFoundException(branchName, exception);
-                    }
-                    throw;
-                }
-
-                // Set our branch to point to the remote branch we just fetched. This is a trivial branch pointer
-                // operation that doesn't touch any working files
-                Execute(tracer, @"update-ref refs/heads/{1} {0}/{1}", RemoteAlias, branchName);
-
-                // Now checkout out our branch, which points to the right place
-                Update(branchName);
+                ExecuteGenericGitCommandWithRetryAndCatchingWellKnownGitErrors(() => Execute(tracer, fetchCommand, RemoteAlias));
             }
-            finally
+            catch (CommandLineException exception)
             {
-                TryDeleteRemote(RemoteAlias, tracer);
+                // Check if the fetch failed because the remote repository hasn't been set up as yet.
+                string branchNotFoundMessage = "fatal: Couldn't find remote ref";
+                string exceptionMessage = exception.Message ?? String.Empty;
+                if (exceptionMessage.StartsWith(branchNotFoundMessage, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new BranchNotFoundException(branchName, exception);
+                }
+                throw;
             }
+
+            // Set our branch to point to the remote branch we just fetched. This is a trivial branch pointer
+            // operation that doesn't touch any working files
+            Execute(tracer, @"update-ref refs/heads/{1} {0}/{1}", RemoteAlias, branchName);
+
+            // Now checkout out our branch, which points to the right place
+            Update(branchName);
         }
 
         public void Update(string id)
@@ -327,7 +347,7 @@ echo $i > pushinfo
                 // git submodule sync will update related git/config to reflect that change
                 Execute("submodule sync");
 
-                ExecuteGenericGitCommandWithRetryAndCatchingWellKnownGitErrors(() => Execute("submodule update --init --recursive"));
+                ExecuteGenericGitCommandWithRetryAndCatchingWellKnownGitErrors(() => Execute("submodule update --init --recursive --force"));
             }
         }
 
@@ -367,19 +387,28 @@ echo $i > pushinfo
         {
             // Delete the lock file from the .git folder
             var lockFilesPath = Path.Combine(_gitExe.WorkingDirectory, ".git");
+            // Always clear lock file under ".git/refs/heads"
+            var branchLockFiles = Path.Combine(_gitExe.WorkingDirectory, ".git", "refs", "heads");
 
             if (!Directory.Exists(lockFilesPath))
             {
                 return;
             }
 
-            var lockFiles = Directory.EnumerateFiles(lockFilesPath, "*.lock", SearchOption.AllDirectories)
+            List<string> lockFiles = Directory.EnumerateFiles(lockFilesPath, "*.lock", SearchOption.AllDirectories)
                                      .Where(fullPath => _lockFileNames.Contains(Path.GetFileName(fullPath), StringComparer.OrdinalIgnoreCase))
                                      .ToList();
+
+            if (Directory.Exists(branchLockFiles))
+            {
+                // perform a seperated EnumerateFiles, otherwise will need to do extra string compare for every files udner .git folder and subfolder
+                lockFiles.AddRange(Directory.EnumerateFiles(branchLockFiles, "*.lock", SearchOption.TopDirectoryOnly));
+            }
+
             if (lockFiles.Count > 0)
             {
                 ITracer tracer = _tracerFactory.GetTracer();
-                tracer.TraceWarning("Deleting left over lock file");
+                tracer.TraceWarning("Deleting left over lock files: [{0}]", string.Join(",", lockFiles));
                 foreach (var file in lockFiles)
                 {
                     FileSystemHelpers.DeleteFileSafe(file);
@@ -394,7 +423,7 @@ echo $i > pushinfo
 
         public IEnumerable<string> ListFiles(string path, SearchOption searchOption, params string[] lookupList)
         {
-            path = PathUtility.CleanPath(path);
+            path = PathUtilityFactory.Instance.CleanPath(path);
 
             if (!FileSystemHelpers.IsSubfolder(RepositoryPath, path))
             {
@@ -412,13 +441,13 @@ echo $i > pushinfo
                     IEnumerable<string> lines = output.Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
                     lines = lines
-                        .Select(line => Path.Combine(RepositoryPath, line.Trim().Trim('"').Replace('/', '\\')))
+                        .Select(line => Path.Combine(RepositoryPath, line.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar)))
                         .Where(p => p.StartsWith(path, StringComparison.OrdinalIgnoreCase));
 
                     switch (searchOption)
                     {
                         case SearchOption.TopDirectoryOnly:
-                            lines = lines.Where(line => !line.Substring(path.Length).TrimStart('\\').Contains('\\'));
+                            lines = lines.Where(line => !line.Substring(path.Length).TrimStart(Path.DirectorySeparatorChar).Contains(Path.DirectorySeparatorChar));
                             break;
 
                         case SearchOption.AllDirectories:
@@ -551,7 +580,7 @@ echo $i > pushinfo
             return OperationManager.Attempt(func, delayBeforeRetry: 1000, shouldRetry: ex =>
             {
                 string error = ex.Message;
-                if (RetriableFetchFailures.Any(retriableFailureMessage => error.Contains(retriableFailureMessage)))
+                if (RetryableFetchFailures.Any(retryableFailureMessage => error.Contains(retryableFailureMessage)))
                 {
                     _tracerFactory.GetTracer().Trace("Retry due to {0}", error);
                     return true;

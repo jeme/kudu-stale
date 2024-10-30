@@ -24,10 +24,11 @@ using System;
 using System.Net;
 using System.Web;
 using Kudu.Contracts.Infrastructure;
-using Kudu.Contracts.Settings;
 using Kudu.Contracts.SourceControl;
 using Kudu.Contracts.Tracing;
+using Kudu.Core;
 using Kudu.Core.Deployment;
+using Kudu.Core.Helpers;
 using Kudu.Core.SourceControl;
 using Kudu.Core.SourceControl.Git;
 using Kudu.Core.Tracing;
@@ -38,18 +39,18 @@ namespace Kudu.Services.GitServer
     public class ReceivePackHandler : GitServerHttpHandler
     {
         private readonly IRepositoryFactory _repositoryFactory;
-        private readonly IAutoSwapHandler _autoSwapHandler;
+        private readonly IEnvironment _environment;
 
         public ReceivePackHandler(ITracer tracer,
                                   IGitServer gitServer,
                                   IOperationLock deploymentLock,
                                   IDeploymentManager deploymentManager,
                                   IRepositoryFactory repositoryFactory,
-                                  IAutoSwapHandler autoSwapHandler)
+                                  IEnvironment environment)
             : base(tracer, gitServer, deploymentLock, deploymentManager)
         {
             _repositoryFactory = repositoryFactory;
-            _autoSwapHandler = autoSwapHandler;
+            _environment = environment;
         }
 
         public override void ProcessRequestBase(HttpContextBase context)
@@ -68,41 +69,49 @@ namespace Kudu.Services.GitServer
                     return;
                 }
 
-                bool acquired = DeploymentLock.TryLockOperation(() =>
+                try
                 {
-                    context.Response.ContentType = "application/x-git-receive-pack-result";
-
-                    if (_autoSwapHandler.IsAutoSwapOngoing())
+                    DeploymentLock.LockOperation(() =>
                     {
-                        context.Response.StatusCode = (int)HttpStatusCode.Conflict;
-                        context.Response.Write(Resources.Error_AutoSwapDeploymentOngoing);
-                        context.ApplicationInstance.CompleteRequest();
-                        return;
-                    }
+                        context.Response.ContentType = "application/x-git-receive-pack-result";
 
-                    string username = null;
-                    if (AuthUtility.TryExtractBasicAuthUser(context.Request, out username))
-                    {
-                        GitServer.SetDeployer(username);
-                    }
+                        if (PostDeploymentHelper.IsAutoSwapOngoing())
+                        {
+                            context.Response.StatusCode = (int)HttpStatusCode.Conflict;
+                            context.Response.Write(Resources.Error_AutoSwapDeploymentOngoing);
+                            context.ApplicationInstance.CompleteRequest();
+                            return;
+                        }
 
-                    UpdateNoCacheForResponse(context.Response);
+                        string username = null;
+                        if (AuthUtility.TryExtractBasicAuthUser(context.Request, out username))
+                        {
+                            GitServer.SetDeployer(username);
+                        }
 
-                    // This temporary deployment is for ui purposes only, it will always be deleted via finally.
-                    ChangeSet tempChangeSet;
-                    using (DeploymentManager.CreateTemporaryDeployment(Resources.ReceivingChanges, out tempChangeSet))
-                    {
-                        GitServer.Receive(context.Request.GetInputStream(), context.Response.OutputStream);
-                    }
+                        UpdateNoCacheForResponse(context.Response);
 
-                    // TODO: Currently we do not support auto-swap for git push due to an issue where we already sent the headers at the
-                    // beginning of the deployment and cannot flag at this point to make the auto swap (by sending the proper headers).
-                    //_autoSwapHandler.HandleAutoSwap(verifyActiveDeploymentIdChanged: true);
-                }, TimeSpan.Zero);
-
-                if (!acquired)
+                        // This temporary deployment is for ui purposes only, it will always be deleted via finally.
+                        ChangeSet tempChangeSet;
+                        using (DeploymentManager.CreateTemporaryDeployment(Resources.ReceivingChanges, out tempChangeSet))
+                        {
+                            // to pass to kudu.exe post receive hook
+                            System.Environment.SetEnvironmentVariable(Constants.RequestIdHeader, _environment.RequestId);
+                            try
+                            {
+                                GitServer.Receive(context.Request.GetInputStream(), context.Response.OutputStream);
+                            }
+                            finally
+                            {
+                                System.Environment.SetEnvironmentVariable(Constants.RequestIdHeader, null);
+                            }
+                        }
+                    }, "Handling git receive pack", TimeSpan.Zero);
+                }
+                catch (LockOperationException ex)
                 {
                     context.Response.StatusCode = 409;
+                    context.Response.Write(ex.Message);
                     context.ApplicationInstance.CompleteRequest();
                 }
             }

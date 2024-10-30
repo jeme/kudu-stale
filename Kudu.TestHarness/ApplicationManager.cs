@@ -21,7 +21,7 @@ namespace Kudu.TestHarness
 {
     public class ApplicationManager
     {
-        private static bool _testFailureOccured;
+        private static bool _testFailureOccurred;
         private readonly ISiteManager _siteManager;
         private readonly Site _site;
         private readonly string _appName;
@@ -55,6 +55,9 @@ namespace Kudu.TestHarness
             JobsManager = new RemoteJobsManager(site.PrimaryServiceBinding + "api", credentials);
             LogFilesManager = new RemoteLogFilesManager(site.PrimaryServiceBinding + "api/logs", credentials);
             SiteExtensionManager = new RemoteSiteExtensionManager(site.PrimaryServiceBinding + "api", credentials);
+            ZipDeploymentManager = new RemotePushDeploymentManager(site.PrimaryServiceBinding + "api/zipdeploy", credentials);
+            WarDeploymentManager = new RemotePushDeploymentManager(site.PrimaryServiceBinding + "api/wardeploy", credentials);
+            OneDeployManager = new RemotePushDeploymentManager(site.PrimaryServiceBinding + "api/publish", credentials);
 
             var repositoryInfo = RepositoryManager.GetRepositoryInfo().Result;
             GitUrl = repositoryInfo.GitUrl.OriginalString;
@@ -184,6 +187,24 @@ namespace Kudu.TestHarness
             private set;
         }
 
+        public RemotePushDeploymentManager ZipDeploymentManager
+        {
+            get;
+            private set;
+        }
+
+        public RemotePushDeploymentManager WarDeploymentManager
+        {
+            get;
+            private set;
+        }
+
+        public RemotePushDeploymentManager OneDeployManager
+        {
+            get;
+            private set;
+        }
+
         public string GitUrl
         {
             get;
@@ -210,17 +231,18 @@ namespace Kudu.TestHarness
             File.WriteAllText(fullPath, content);
         }
 
-        public string GetKuduUpTime()
+        public async Task<string> GetKuduUpTimeAsync()
         {
             const string pattern = @"<div class=""col-xs-2"">\s*<strong>Site up time</strong>\s*</div>\s*<div>([^<]*)</div>";
 
-            string content = OperationManager.Attempt<string>(() =>
+            string content = await OperationManager.AttemptAsync<string>(async () =>
             {
                 using (HttpClient client = HttpClientHelper.CreateClient(this.ServiceUrl, this.DeploymentManager.Credentials))
                 {
-                    using (HttpResponseMessage response = client.GetAsync(String.Empty).Result.EnsureSuccessStatusCode())
+                    using (HttpResponseMessage response = await client.GetAsync(String.Empty))
                     {
-                        return response.Content.ReadAsStringAsync().Result;
+                        response.EnsureSuccessStatusCode();
+                        return await response.Content.ReadAsStringAsync();
                     }
                 }
             }, 3, 1000);
@@ -244,7 +266,7 @@ namespace Kudu.TestHarness
 
         public static async Task RunAsync(string testName, Func<ApplicationManager, Task> action)
         {
-            if (KuduUtils.StopAfterFirstTestFailure && _testFailureOccured)
+            if (KuduUtils.StopAfterFirstTestFailure && _testFailureOccurred)
             {
                 return;
             }
@@ -260,7 +282,7 @@ namespace Kudu.TestHarness
             TestTracer.Trace("Using site - {0}", appManager.SiteUrl);
 
             var dumpPath = Path.Combine(PathHelper.TestResultsPath, testName, testName + ".zip");
-            bool succcess = true;
+            bool success = true;
             try
             {
                 using (StartLogStream(appManager))
@@ -274,11 +296,19 @@ namespace Kudu.TestHarness
             {
                 KuduUtils.DownloadDump(appManager.ServiceUrl, dumpPath);
 
+                // if not stop on failure, kill w3wp before reusing this site
+                if (!KuduUtils.StopAfterFirstTestFailure)
+                {
+                    TestTracer.Trace("Killing kudu site - {0}", appManager.SiteUrl);
+
+                    KuduUtils.KillKuduProcess(appManager.ServiceUrl);
+                }
+
                 TestTracer.Trace("Run failed with exception\n{0}", ex);
 
-                succcess = false;
+                success = false;
 
-                _testFailureOccured = true;
+                _testFailureOccurred = true;
 
                 throw;
             }
@@ -286,7 +316,7 @@ namespace Kudu.TestHarness
             {
                 SafeTraceDeploymentLogs(appManager);
 
-                SitePool.ReportTestCompletion(appManager, succcess);
+                SitePool.ReportTestCompletion(appManager, success);
             }
         }
 
@@ -297,7 +327,7 @@ namespace Kudu.TestHarness
             if (Debugger.IsAttached)
             {
                 // Set to verbose level
-                appManager.SettingsManager.SetValue("trace_level", "4").Wait();
+                appManager.SettingsManager.SetValue("SCM_TRACE_LEVEL", "4").Wait();
 
                 RemoteLogStreamManager mgr = appManager.CreateLogStreamManager("kudu");
                 waitHandle = new LogStreamWaitHandle(mgr.GetStream().Result);

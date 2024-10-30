@@ -8,7 +8,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using Kudu.Contracts.Diagnostics;
 using Kudu.Contracts.Tracing;
-using Kudu.Core;
 using Kudu.Core.Infrastructure;
 using Kudu.Services.Diagnostics;
 using Kudu.TestHarness;
@@ -16,7 +15,7 @@ using Moq;
 using Xunit;
 
 namespace Kudu.Services.Test
-{    
+{
     public class ApplicationLogsReaderFacts
     {
         [Fact]
@@ -658,8 +657,7 @@ System.ApplicationException: The trace listener AzureTableTraceListener is disab
         {
             _fs = fs;
             FileSystemHelpers.Instance = fs;
-            RootDir = _fs.Path.GetTempFileName();
-            _fs.File.Delete(RootDir);
+            RootDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
 
             LogDir = Path.Combine(RootDir, Constants.LogFilesPath, Constants.ApplicationLogFilesDirectory);
             _fs.Directory.CreateDirectory(LogDir);
@@ -674,7 +672,7 @@ System.ApplicationException: The trace listener AzureTableTraceListener is disab
 
         public void Dispose()
         {
-            _fs.Directory.Delete(RootDir, true);
+            OperationManager.Attempt(() => _fs.Directory.Delete(RootDir, true), delayBeforeRetry: 1000);
         }
     }
 

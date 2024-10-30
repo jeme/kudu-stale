@@ -1,6 +1,5 @@
 ﻿using System;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.Core.Infrastructure.Test
 {
@@ -199,7 +198,7 @@ namespace Kudu.Core.Infrastructure.Test
         }
 
         [Fact]
-        public void ToStringReturnsReaminingString()
+        public void ToStringReturnsRemainingString()
         {
             // Arrange
             var stringReader = new StringReader("abcd");

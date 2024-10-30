@@ -1,4 +1,5 @@
-﻿using Kudu.Core;
+﻿using System;
+using Kudu.Core;
 
 namespace Kudu.TestHarness
 {
@@ -64,6 +65,12 @@ namespace Kudu.TestHarness
             set;
         }
 
+        public string ZipTempPath
+        {
+            get;
+            set;
+        }
+
         public string ScriptPath
         {
             get;
@@ -124,7 +131,43 @@ namespace Kudu.TestHarness
             set;
         }
 
+        public string SecondaryJobsBinariesPath
+        {
+            get;
+            set;
+        }
+
         public string SiteExtensionSettingsPath
+        {
+            get;
+            set;
+        }
+
+        public string AppBaseUrlPrefix
+        {
+            get;
+            set;
+        }
+
+        public string FunctionsPath
+        {
+            get;
+            set;
+        }
+
+        public string SitePackagesPath
+        {
+            get;
+            set;
+        }
+
+        public string RequestId
+        {
+            get;
+            set;
+        }
+
+        public string SiteRestrictedJwt
         {
             get;
             set;

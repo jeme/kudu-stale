@@ -145,7 +145,7 @@
     <value>No log found for '{0}'.</value>
   </data>
   <data name="Error_ProcessAborted" xml:space="preserve">
-    <value>Command '{0}' aborted due to no output and CPU activity for {1:0} seconds.  You may increase {2} setting to solve the issue.</value>
+    <value>Command '{0}' was aborted due to no output nor CPU activity for {1:0} seconds. You can increase the {2} app setting (or {3} if this is a WebJob) if needed.</value>
   </data>
   <data name="Error_ProjectDoesNotExist" xml:space="preserve">
     <value>The specified project '{0}' is not valid. It needs to point to either a csproj/vbproj file or to a directory.</value>
@@ -177,6 +177,9 @@
   <data name="Log_DeploymentSuccessful" xml:space="preserve">
     <value>Deployment successful.</value>
   </data>
+  <data name="Log_DeploymentFailed" xml:space="preserve">
+    <value>Deployment Failed.</value>
+  </data>
   <data name="Log_GeneratingDeploymentScript" xml:space="preserve">
     <value>Generating deployment script.</value>
   </data>
@@ -185,6 +188,9 @@
   </data>
   <data name="Log_PreparingDeployment" xml:space="preserve">
     <value>Preparing deployment for commit id '{0}'.</value>
+  </data>
+  <data name="Log_DelayingBeforeDeployment" xml:space="preserve">
+    <value>Delaying deployment for {0}s.</value>
   </data>
   <data name="Log_UnexpectedError" xml:space="preserve">
     <value>An unknown error has occurred. Check the diagnostic log for details.</value>
@@ -214,6 +220,24 @@
     <value>No runnable script file was found.</value>
   </data>
   <data name="Log_MaxJobLogLinesReached" xml:space="preserve">
-    <value>Reached maximum allowed output lines for this run, to see all of the job's logs you can enable website application diagnostics</value>
+    <value>Reached maximum allowed output lines for this run, to see all of the job's logs you can enable App Service Logs option in the Portal.</value>
+  </data>
+  <data name="Warning_EnableAlwaysOn" xml:space="preserve">
+    <value>'Always On' doesn't appear to be enabled for this Web App. To ensure your continuous job doesn't stop running when the SCM host is idle for too long, consider enabling 'Always On' in the configuration settings for your Web App. Note: 'Always On' is available only in Basic, Standard and Premium modes.</value>
+  </data>
+  <data name="Error_FailedToLocateBash" xml:space="preserve">
+    <value>Unable to locate 'bash.exe'. Make sure it is installed.</value>
+  </data>
+  <data name="Log_TriggeringContainerRestart" xml:space="preserve">
+    <value>App container will begin restart within 10 seconds.</value>
+  </data>
+  <data name="FetchingChanges" xml:space="preserve">
+    <value>Fetching changes.</value>
+  </data>
+  <data name="ReceivingChanges" xml:space="preserve">
+    <value>Receiving changes.</value>
+  </data>
+  <data name="Error_SiteExtensionNotFound" xml:space="preserve">
+    <value>SiteExtension id: {0} not installed locally. Searched directory : {1}</value>
   </data>
 </root>

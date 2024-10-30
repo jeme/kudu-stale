@@ -1,34 +1,35 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Abstractions;
 using System.Linq;
+using Kudu.Core.Tracing;
+using Kudu.Contracts.Infrastructure;
+using Kudu.Contracts.Tracing;
 using Kudu.Core.Infrastructure;
 using Kudu.Core.SourceControl;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Kudu.Core.Settings;
 
 namespace Kudu.Core.Deployment
 {
     public static class DeploymentHelper
     {
-        private static readonly string[] _projectFileExtensions = new[] { ".csproj", ".vbproj", ".fsproj" };
+        // build using msbuild in Azure
+        // does not include njsproj(node), pyproj(python), they are built differently
+        private static readonly string[] _projectFileExtensions = new[] { ".csproj", ".vbproj", ".fsproj", ".xproj" };
 
         public static readonly string[] ProjectFileLookup = _projectFileExtensions.Select(p => "*" + p).ToArray();
 
-        public static IList<string> GetProjects(string path, IFileFinder fileFinder, SearchOption searchOption = SearchOption.AllDirectories)
+        public static IList<string> GetMsBuildProjects(string path, IFileFinder fileFinder, SearchOption searchOption = SearchOption.AllDirectories)
         {
             IEnumerable<string> filesList = fileFinder.ListFiles(path, searchOption, ProjectFileLookup);
             return filesList.ToList();
         }
 
-        public static bool IsProject(string path)
+        public static bool IsMsBuildProject(string path)
         {
             return _projectFileExtensions.Any(extension => path.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
-        }
-
-        public static bool IsDeployableProject(string path)
-        {
-            return IsProject(path) &&
-                   (VsHelper.IsWap(path) || VsHelper.IsExecutableProject(path));
         }
 
         public static bool IsDefaultWebRootContent(string webroot)
@@ -54,5 +55,55 @@ namespace Kudu.Core.Deployment
 
             return false;
         }
-    }
+
+        public static void PurgeZipsIfNecessary(string sitePackagesPath, ITracer tracer, int totalAllowedZips)
+        {
+            IEnumerable<string> zipFiles = FileSystemHelpers.GetFiles(sitePackagesPath, "*.zip");
+            if (zipFiles.Count() > totalAllowedZips)
+            {
+                // Order the files in descending order of the modified date and remove the last (N - allowed zip files).
+                var fileNamesToDelete = zipFiles.OrderByDescending(fileName => FileSystemHelpers.GetLastWriteTimeUtc(fileName)).Skip(totalAllowedZips);
+                foreach (var fileName in fileNamesToDelete)
+                {
+                    using (tracer.Step("Deleting outdated zip file {0}", fileName))
+                    {
+                        try
+                        {
+                            FileSystemHelpers.DeleteFile(fileName);
+                        }
+                        catch (Exception ex)
+                        {
+                            tracer.TraceError(ex, "Unable to delete zip file {0}", fileName);
+                        }
+                    }
+                }
+            }
+        }
+
+        public static async Task<HttpContent> GetArtifactContentFromURLAsync(ArtifactDeploymentInfo artifactDeploymentInfo, ITracer tracer)
+        {
+            var client = new HttpClient(new HttpClientHandler());
+            Uri uri = new Uri(artifactDeploymentInfo.RemoteURL);
+            using (tracer.Step($"Trying to make a GET request to {StringUtils.ObfuscatePath(artifactDeploymentInfo.RemoteURL)}"))
+            {
+                try
+                {
+                    return await OperationManager.AttemptAsync<HttpContent>(async () =>
+                    {
+                        HttpResponseMessage response = ScmHostingConfigurations.UseHttpCompletionOptionResponseHeadersRead 
+                            ? await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead) 
+                            : await client.GetAsync(uri);
+                        response.EnsureSuccessStatusCode();
+                        tracer.Trace("Content Length of Artifact: {0:n0} bytes.", response.Content.Headers.ContentLength);
+                        return response.Content;
+                    });
+                }
+                catch (Exception ex)
+                {
+                    tracer.TraceError(ex, "Could not make a successful GET request to {0}", StringUtils.ObfuscatePath(artifactDeploymentInfo.RemoteURL));
+                    throw;
+                }
+            }
+        }
+    }       
 }

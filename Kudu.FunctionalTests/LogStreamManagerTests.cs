@@ -1,17 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
-using Kudu.Client.Infrastructure;
 using Kudu.FunctionalTests.Infrastructure;
 using Kudu.TestHarness;
+using Kudu.TestHarness.Xunit;
 using Xunit;
 
 namespace Kudu.FunctionalTests
 {
-    [TestHarnessClassCommand]
+    [KuduXunitTestClass]
     public class LogStreamManagerTests
     {
         [Fact]
@@ -123,8 +120,11 @@ namespace Kudu.FunctionalTests
             ApplicationManager.Run(appName, appManager =>
             {
                 RemoteLogStreamManager manager = new RemoteLogStreamManager(appManager.ServiceUrl + "/logstream/notfound");
-                var ex = KuduAssert.ThrowsUnwrapped<WebException>(() => manager.GetStream().Wait());
-                Assert.Equal(((HttpWebResponse)ex.Response).StatusCode, HttpStatusCode.NotFound);
+                using (var waitHandle = new LogStreamWaitHandle(manager.GetStream().Result))
+                {
+                    string line = waitHandle.WaitNextLine(10000);
+                    Assert.True(!String.IsNullOrEmpty(line) && line.Contains("Welcome"), "check welcome message: " + line);
+                }
             });
         }
 

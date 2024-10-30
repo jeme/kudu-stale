@@ -2,20 +2,21 @@
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using Kudu.Client;
 using Kudu.Contracts.Settings;
 using Kudu.Core;
 using Kudu.Core.Deployment;
-using Kudu.Core.Infrastructure;
 using Kudu.FunctionalTests.Infrastructure;
 using Kudu.TestHarness;
+using Kudu.TestHarness.Xunit;
 using Xunit;
 
 namespace Kudu.FunctionalTests
 {
-    [TestHarnessClassCommand]
-    public class GitDeploymentTests
+    [KuduXunitTestClass]
+    public class AspNetAppOrchardTests : GitDeploymentTests
     {
         // ASP.NET apps
 
@@ -24,78 +25,136 @@ namespace Kudu.FunctionalTests
         {
             PushAndDeployApps("Orchard", "master", "Welcome to Orchard", HttpStatusCode.OK, "");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetAppProjectWithNoSolutionTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployAspNetAppProjectWithNoSolution()
         {
             PushAndDeployApps("ProjectWithNoSolution", "master", "Project without solution", HttpStatusCode.OK, "");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetAppHiddenFoldersAndFilesTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployAspNetAppHiddenFoldersAndFiles()
         {
             PushAndDeployApps("HiddenFoldersAndFiles", "master", "Hello World", HttpStatusCode.OK, "");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class WebApiAppTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployWebApiApp()
         {
             PushAndDeployApps("Dev11_Net45_Mvc4_WebAPI", "master", "HelloWorld", HttpStatusCode.OK, "", resourcePath: "api/values", httpMethod: "POST", jsonPayload: "\"HelloWorld\"");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetAppWebSiteInSolutionTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployAspNetAppWebSiteInSolution()
         {
             PushAndDeployApps("WebSiteInSolution", "master", "SomeDummyLibrary.Class1", HttpStatusCode.OK, "");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetAppWebSiteInSolutionWithDeploymentFileTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployAspNetAppWebSiteInSolutionWithDeploymentFile()
         {
             PushAndDeployApps("WebSiteInSolution", "UseDeploymentFile", "SomeDummyLibrary.Class1", HttpStatusCode.OK, "");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetAppKuduGlobTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployAspNetAppKuduGlob()
         {
             PushAndDeployApps("kuduglob", "master", "ASP.NET MVC", HttpStatusCode.OK, "酷度");
         }
+    }
 
-        [Fact(Skip="Still needs more work in the deployment script to work")]
+    [KuduXunitTestClass]
+    public class AspNetAppUnicodeNameTests : GitDeploymentTests
+    {
+        // Still needs more work in the deployment script to work
+        // [Fact]
         public void PushAndDeployAspNetAppUnicodeName()
         {
             PushAndDeployApps("-benr-", "master", "Hello!", HttpStatusCode.OK, "");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetAppAppWithPostBuildEventTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployAspNetAppAppWithPostBuildEvent()
         {
             PushAndDeployApps("AppWithPostBuildEvent", "master", "Hello Kudu", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class FSharpWebApplicationTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployFSharpWebApplication()
         {
             PushAndDeployApps("fsharp-owin-sample", "master", "Owin Sample with F#", HttpStatusCode.OK, "");
         }
+    }
 
-        // Node apps
-
+    [KuduXunitTestClass]
+    public class NodeAppExpressTests : GitDeploymentTests
+    {
         [Fact]
+        // Ensure node is installed. --> PrivateOnly
+        [KuduXunitTest(PrivateOnly = true)]
         public void PushAndDeployNodeAppExpress()
         {
-            // Ensure node is installed.
-            Assert.Contains("nodejs", System.Environment.GetEnvironmentVariable("Path"), StringComparison.OrdinalIgnoreCase);
-
             PushAndDeployApps("Express-Template", "master", "Modify this template to jump-start your Node.JS Express Web Pages application", HttpStatusCode.OK, "");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class NodeJsVS2017Tests : GitDeploymentTests
+    {
+        [Fact]
+        // Ensure node is installed. --> PrivateOnly
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployNodeJsVS2017()
+        {
+            PushAndDeployApps("NodeJSVS17project", "master", "Hello World", HttpStatusCode.OK, "Deployment successful");
+        }
+    }
+
+    [KuduXunitTestClass]
+    public class Html5WithAppJsTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployHtml5WithAppJs()
         {
             PushAndDeployApps("Html5Test", "master", "html5", HttpStatusCode.OK, String.Empty);
         }
+    }
 
+    [KuduXunitTestClass]
+    public class EFMVC45AppSqlCompactMAPEIATests : GitDeploymentTests
+    {
         //Entity Framework 4.5 MVC Project with SQL Compact DB (.sdf file)
         //and Metadata Artifact Processing set to 'Embed in Assembly'
         [Fact]
@@ -103,7 +162,11 @@ namespace Kudu.FunctionalTests
         {
             PushAndDeployApps("MvcApplicationEFSqlCompact", "master", "Reggae", HttpStatusCode.OK, "");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class CustomDeploymentScriptShouldHaveDeploymentSettingTests : GitDeploymentTests
+    {
         // Other apps
 
         [Fact]
@@ -143,43 +206,16 @@ namespace Kudu.FunctionalTests
                     expectedLogFeedback };
                 KuduAssert.VerifyLogOutput(appManager, results[0].Id, expectedStrings);
 
-                var ex = await ExceptionAssert.ThrowsAsync<HttpUnsuccessfulRequestException>(() => appManager.DeploymentManager.GetDeploymentScriptAsync());
+                var ex = await Assert.ThrowsAsync<HttpUnsuccessfulRequestException>(() => appManager.DeploymentManager.GetDeploymentScriptAsync());
                 Assert.Equal(HttpStatusCode.NotFound, ex.ResponseMessage.StatusCode);
                 Assert.Contains("Operation only supported if not using a custom deployment script", ex.ResponseMessage.ExceptionMessage);
             });
         }
+    }
 
-        [Fact]
-        public async Task PushHelloKuduAutoSwapSecondPushShouldFail()
-        {
-            const string randomTestName = "PushHelloKuduAutoSwapSecondPushShouldFail";
-            await ApplicationManager.RunAsync(randomTestName, async appManager =>
-            {
-                await appManager.SettingsManager.SetValue("WEBSITE_SWAP_SLOTNAME", "someslot");
-
-                // Act
-                using (TestRepository testRepository = Git.Clone("HelloKudu"))
-                {
-                    appManager.GitDeploy(testRepository.PhysicalPath);
-                    var results = appManager.DeploymentManager.GetResultsAsync().Result.ToList();
-
-                    // Assert
-                    Assert.Equal(1, results.Count);
-                    Assert.Equal(DeployStatus.Success, results[0].Status);
-
-                    testRepository.WriteFile("somefile.txt", String.Empty);
-                    Git.Commit(testRepository.PhysicalPath, "some commit");
-
-                    // TODO: Add this assert when auto swap is enabled for git push
-                    // var ex = Assert.Throws<CommandLineException>(() => appManager.GitDeploy(testRepository.PhysicalPath, retries: 1));
-                    // Assert.Contains("HTTP code = 409", ex.Error);
-
-                    // Currently this succeeds as auto swap will not occur on git push
-                    appManager.GitDeploy(testRepository.PhysicalPath);
-                }
-            });
-        }
-
+    [KuduXunitTestClass]
+    public class HelloKuduWithCorruptedGitTestsTests : GitDeploymentTests
+    {
         [Fact]
         public async Task PushHelloKuduWithCorruptedGitTests()
         {
@@ -221,7 +257,11 @@ namespace Kudu.FunctionalTests
                 }
             });
         }
+    }
 
+    [KuduXunitTestClass]
+    public class CustomGeneratorArgsTests : GitDeploymentTests
+    {
         [Fact]
         public async Task CustomGeneratorArgs()
         {
@@ -242,7 +282,11 @@ namespace Kudu.FunctionalTests
                 KuduAssert.VerifyUrl(appManager.SiteUrl + "themes/base/jquery.ui.accordion.css", ".ui-accordion-header");
             });
         }
+    }
 
+    [KuduXunitTestClass]
+    public class UpdatedTargetPathShouldChangeDeploymentDestinationTests : GitDeploymentTests
+    {
         [Fact]
         public void UpdatedTargetPathShouldChangeDeploymentDestination()
         {
@@ -259,71 +303,254 @@ namespace Kudu.FunctionalTests
                 KuduAssert.VerifyUrl(appManager.SiteUrl + "myTarget/index.html", "Target Path Test");
             });
         }
+    }
 
+    [KuduXunitTestClass]
+    public class MVCAppWithLatestNugetTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployMVCAppWithLatestNuget()
         {
             PushAndDeployApps("MVCAppWithLatestNuget", "master", "MVCAppWithLatestNuget", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class MVCAppWithNuGetAutoRestoreTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployMVCAppWithNuGetAutoRestore()
         {
             PushAndDeployApps("MvcApplicationWithNuGetAutoRestore", "master", "MvcApplicationWithNuGetAutoRestore", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class MvcAppWithAutoRestoreFailsIfRestoreFailsTests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployMvcAppWithAutoRestoreFailsIfRestoreFails()
         {
             PushAndDeployApps("MvcApplicationWithNuGetAutoRestore", "bad-config", null, HttpStatusCode.OK, "Unable to find version '1.2.34' of package 'Package.That.Should.NotExist'.", DeployStatus.Failed);
         }
+    }
 
+    [KuduXunitTestClass]
+    public class MvcAppWithTypeScriptTests : GitDeploymentTests
+    {
         [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
         public void PushAndDeployMvcAppWithTypeScript()
         {
             PushAndDeployApps("MvcAppWithTypeScript", "master", "Hello, TypeScript Footer!", HttpStatusCode.OK, "Deployment successful", resourcePath: "/Scripts/ts/FooterUpdater.js");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class PreviewWebApi5Tests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployPreviewWebApi5()
         {
             PushAndDeployApps("PreviewWebApi5", "master", "ASP.NET Preview WebAPI 5", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class PreviewSpa5Tests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployPreviewSpa5()
         {
             PushAndDeployApps("PreviewSpa5", "master", "Preview SPA 5", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class PreviewMvc5Tests : GitDeploymentTests
+    {
         [Fact]
         public void PushAndDeployPreviewMvc5()
         {
             PushAndDeployApps("PreviewMvc5", "master", "ASP.NET Preview MVC5 App", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class ChakraMsieTests : GitDeploymentTests
+    {
         [Fact]
-        public void PushAndDeployAspNet5WithSln()
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployChakraMsieTest()
         {
-            PushAndDeployApps("AspNet5With2ProjectsAndSlnFile", "master", "Welcome from ClassLibrary", HttpStatusCode.OK, "Deployment successful");
+            PushAndDeployApps("ChakraMsieTest", "master", "170 - 2 = 168", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetCore21VS17WithLibTests : GitDeploymentTests
+    {
         [Fact]
-        public void PushAndDeployAspNet5NoSln()
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployAspNetCore21VS17WithLib()
         {
-            PushAndDeployApps("AspNet5With2ProjectsNoSlnFile", "master", "Welcome from ClassLibrary", HttpStatusCode.OK, "Deployment successful");
+            PushAndDeployApps("AspNetCore2.1.0VS17WithLib", "master", "DotNetCore210", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetCore20VS17WithLibTests : GitDeploymentTests
+    {
         [Fact]
-        public void PushAndDeployCSharp6Web()
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployAspNetCore20VS17WithLib()
         {
-            PushAndDeployApps("CSharp6Web", "master", "ASP.NET is a free web framework", HttpStatusCode.OK, "Deployment successful");
+            PushAndDeployApps("AspNetCore2.0.0VS17WithLib", "master", "DotNetCore200", HttpStatusCode.OK, "Deployment successful");
         }
+    }
 
+    [KuduXunitTestClass]
+    public class AspNetCore10VS17WithLibTests : GitDeploymentTests
+    {
+        [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployAspNetCore10VS17WithLib()
+        {
+            PushAndDeployApps("AspNetCore1.0.0VS17WithLib", "master", "DotNetCore100", HttpStatusCode.OK, "Deployment successful");
+        }
+    }
+
+    [KuduXunitTestClass]
+    public class AspNetCore11VS17WithLibTests : GitDeploymentTests
+    {
+        [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployAspNetCore11VS17WithLib()
+        {
+            PushAndDeployApps("AspNetCore1.1.0VS17WithLib", "master", "DotNetCore110", HttpStatusCode.OK, "Deployment successful");
+        }
+    }
+
+    [KuduXunitTestClass]
+    public class AspNetCore2CliWithLibTests : GitDeploymentTests
+    {
+        [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployAspNetCore2CliWithLib()
+        {
+            PushAndDeployApps("AspNetCore2.0CliWithLib", "master", "lib success", HttpStatusCode.OK, "Deployment successful");
+        }
+    }
+
+    [KuduXunitTestClass]
+    public class AspNetCore2CliTests : GitDeploymentTests
+    {
+        [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployAspNetCore2Cli()
+        {
+            PushAndDeployApps("AspNetCore2.0.0Cli", "master", "Hello World!", HttpStatusCode.OK, "Deployment successful");
+        }
+    }
+
+    [KuduXunitTestClass]
+    public class AspNetCoreRC4WebApiVsSlnTests : GitDeploymentTests
+    {
+        [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployAspNetCoreRC4WebApiVsSln()
+        {
+            PushAndDeployApps("AspNetCoreRC4WebApiVsSln", "master", "[\"classlibrary\",\"netstandard\"]", HttpStatusCode.OK, "Deployment successful", resourcePath: "/api/values");
+        }
+    }
+
+    [KuduXunitTestClass]
+    public class AspNetCore21WebApiCliTests : GitDeploymentTests
+    {
+        [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
+        public void PushAndDeployAspNetCore21WebApiCli()
+        {
+            PushAndDeployApps("AspNetCore2.1.0WebApiCli", "master", "[\"value1\",\"value2\"]", HttpStatusCode.OK, "Deployment successful", resourcePath: "/api/values");
+        }
+    }
+
+    [KuduXunitTestClass]
+    public class NodeJsAppVer18ShouldBeDeployedTests : GitRepositoryManagementTests
+    {
+        [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
+        public void NodeWithSolutionsUnderNodeModulesShouldBeDeployed()
+        {
+            string appName = "NodeWithSolutionsUnderNodeModulesShouldBeDeployed";
+
+            using (var repo = Git.Clone("NodeJsAppVer18"))
+            {
+                ApplicationManager.Run(appName, appManager =>
+                {
+                    // Act
+                    appManager.GitDeploy(repo.PhysicalPath);
+                    var results = appManager.DeploymentManager.GetResultsAsync().Result.ToList();
+
+                    // Assert
+                    Assert.Equal(1, results.Count);
+                    Assert.Equal(DeployStatus.Success, results[0].Status);
+
+                    var log = GetLog(appManager, results[0].Id);
+
+                    // Node js version.
+                    Assert.Contains("18.3.0", log);
+
+                    // NPM version.
+                    Assert.Contains("8.11.0", log); 
+
+                    Assert.Contains("Handling node.js deployment", log);
+                });
+            }
+        }
+    }
+
+    [KuduXunitTestClass]
+    public class DumpAllAppTests
+    {
+        [Fact]
+        [KuduXunitTest(PrivateOnly = true)]
+        public async Task DumpAllAppTest()
+        {
+            // Arrange
+            string appName = "DumpAllApp";
+            using (var repo = Git.Clone(appName))
+            {
+                await ApplicationManager.RunAsync(appName, async appManager =>
+                {
+                    // Act
+                    appManager.GitDeploy(repo.PhysicalPath);
+
+                    // Assert
+                    var results = (await appManager.DeploymentManager.GetResultsAsync()).ToList();
+                    Assert.Equal(1, results.Count);
+                    Assert.Equal(DeployStatus.Success, results[0].Status);
+
+                    // Verify Content
+                    var requestId = $"{Guid.NewGuid()}";
+                    var expected = $"<li><strong>Request-Id</strong><span> = {requestId}</span></li>";
+                    await KuduAssert.VerifyUrlAsync(appManager.SiteUrl, content: expected, headers: new[] { new NameValueHeaderValue("Request-Id", requestId) });
+
+                    // Verify Proxy-Authorization
+                    var proxyAuth = $"Basic {Guid.NewGuid()}, Basic {Guid.NewGuid()}";
+                    expected = $"<li><strong>Proxy-Authorization</strong><span> = {proxyAuth}</span></li>";
+                    await KuduAssert.VerifyUrlAsync(appManager.SiteUrl, content: expected, httpClientHandler: client => client.DefaultRequestHeaders.TryAddWithoutValidation("Proxy-Authorization", proxyAuth));
+                });
+            }
+        }
+    }
+
+    public abstract class GitDeploymentTests
+    {
         //Common code
-        internal static void PushAndDeployApps(string repoCloneUrl, string defaultBranchName, string verificationText, 
-                                              HttpStatusCode expectedResponseCode, string verificationLogText, 
-                                              DeployStatus expectedStatus = DeployStatus.Success, string resourcePath = "", 
+        internal static void PushAndDeployApps(string repoCloneUrl, string defaultBranchName, string verificationText,
+                                              HttpStatusCode expectedResponseCode, string verificationLogText,
+                                              DeployStatus expectedStatus = DeployStatus.Success, string resourcePath = "",
                                               string httpMethod = "GET", string jsonPayload = "", bool deleteSCM = false)
         {
             using (new LatencyLogger("PushAndDeployApps - " + repoCloneUrl))

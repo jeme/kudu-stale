@@ -7,13 +7,13 @@ using Kudu.Contracts.Infrastructure;
 using Kudu.Contracts.Settings;
 using Kudu.Contracts.Tracing;
 using Kudu.Core.Deployment;
+using Kudu.Core.Functions;
 using Kudu.Core.Hooks;
 using Kudu.Core.Infrastructure;
 using Kudu.Core.SourceControl;
 using Kudu.Core.Tracing;
 using Moq;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.Core.Test.Deployment
 {
@@ -70,13 +70,13 @@ namespace Kudu.Core.Test.Deployment
             var deploymentPath = @"x:\sites\deployments";
             var environment = Mock.Of<IEnvironment>(e => e.DeploymentsPath == deploymentPath);
             var analytics = Mock.Of<IAnalytics>();
-            var statusLock = Mock.Of<IOperationLock>(l => l.Lock() == true);
+            var statusLock = Mock.Of<IOperationLock>(l => l.Lock(It.IsAny<string>()) == true);
             var stream = new Mock<MemoryStream> { CallBase = true };
             stream.Setup(s => s.Close());
 
             var statusFile = Path.Combine(deploymentPath, id, "status.xml");
 
-            FileSystemHelpers.Instance = GetMockFileSystem(statusFile, () =>
+            FileSystemHelpers.Instance = MockFileSystem.GetMockFileSystem(statusFile, () =>
             {
                 stream.Object.Position = 0;
                 return Encoding.UTF8.GetString(stream.Object.GetBuffer(), 0, (int)stream.Object.Length);
@@ -86,85 +86,101 @@ namespace Kudu.Core.Test.Deployment
             fileBase.Setup(f => f.Create(statusFile))
                     .Returns((string path) => stream.Object);
 
-            try
-            {
-                var deploymentStatus = DeploymentStatusFile.Create(id, environment, statusLock);
-                deploymentStatus.Id = id;
-                deploymentStatus.Status = DeployStatus.Success;
-                deploymentStatus.StatusText = "Success";
-                deploymentStatus.AuthorEmail = "john.doe@live.com";
-                deploymentStatus.Author = "John Doe \x08";
-                deploymentStatus.Message = "Invalid char is \u0010";
-                deploymentStatus.Progress = String.Empty;
-                deploymentStatus.EndTime = DateTime.UtcNow;
-                deploymentStatus.LastSuccessEndTime = DateTime.UtcNow;
-                deploymentStatus.Complete = true;
-                deploymentStatus.IsTemporary = false;
-                deploymentStatus.IsReadOnly = false;
+            var statusCompleteFile = Path.Combine(deploymentPath, id, "status_complete.xml");
+            fileBase.Setup(f => f.Copy(statusFile, statusCompleteFile, true));
 
-                // Save
-                deploymentStatus.Save();
+            var deploymentStatus = DeploymentStatusFile.Create(id, environment, statusLock);
+            deploymentStatus.Id = id;
+            deploymentStatus.Status = DeployStatus.Success;
+            deploymentStatus.StatusText = "Success";
+            deploymentStatus.AuthorEmail = "john.doe@live.com";
+            deploymentStatus.Author = "John Doe \x08";
+            deploymentStatus.Message = "Invalid char is \u0010";
+            deploymentStatus.Progress = String.Empty;
+            deploymentStatus.EndTime = DateTime.UtcNow;
+            deploymentStatus.LastSuccessEndTime = DateTime.UtcNow;
+            deploymentStatus.Complete = true;
+            deploymentStatus.IsTemporary = false;
+            deploymentStatus.IsReadOnly = false;
 
-                // Roundtrip
-                deploymentStatus = DeploymentStatusFile.Open(id, environment, analytics, statusLock);
+            // Save
+            deploymentStatus.Save();
 
-                // Assert
-                Assert.Equal(id, deploymentStatus.Id);
-                Assert.Equal("John Doe ", deploymentStatus.Author);
-                Assert.Equal("Invalid char is ", deploymentStatus.Message);
-            }
-            finally
-            {
-                FileSystemHelpers.Instance = null;
-            }
+            // Roundtrip
+            deploymentStatus = DeploymentStatusFile.Open(id, environment, analytics, statusLock);
+
+            // Assert
+            Assert.Equal(id, deploymentStatus.Id);
+            Assert.Equal("John Doe ", deploymentStatus.Author);
+            Assert.Equal("Invalid char is ", deploymentStatus.Message);
         }
 
         [Theory]
-        [PropertyData("DeploymentStatusFileScenarios")]
-        public void CorruptedDeploymentStatusFileTests(string content, bool expectedNull, bool expectedError)
+        [MemberData("DeploymentStatusFileScenarios")]
+        public void CorruptedDeploymentStatusFileTests(string content, bool expectedNull, string expectedError)
         {
             var id = Guid.NewGuid().ToString();
             var deploymentPath = @"x:\sites\deployments";
             var environment = Mock.Of<IEnvironment>(e => e.DeploymentsPath == deploymentPath);
             var analytics = Mock.Of<IAnalytics>();
-            var statusLock = Mock.Of<IOperationLock>(l => l.Lock() == true);
+            var statusLock = Mock.Of<IOperationLock>(l => l.Lock(It.IsAny<string>()) == true);
 
             var statusFile = Path.Combine(deploymentPath, id, "status.xml");
 
-            FileSystemHelpers.Instance = GetMockFileSystem(statusFile, () => content);
+            FileSystemHelpers.Instance = MockFileSystem.GetMockFileSystem(statusFile, () => content);
 
-            try
+            var status = DeploymentStatusFile.Open(id, environment, analytics, statusLock);
+
+            if (expectedNull)
             {
-                var status = DeploymentStatusFile.Open(id, environment, analytics, statusLock);
+                Assert.Null(status);
 
-                if (expectedNull)
-                {
-                    Assert.Null(status);
-
-                    Mock.Get(FileSystemHelpers.Instance.DirectoryInfo.FromDirectoryName(Path.Combine(deploymentPath, id)))
-                        .Verify(d => d.Delete(), content != null ? Times.Once() : Times.Never());
-                }
-                else
-                {
-                    Assert.NotNull(status);
-
-                    Mock.Get(FileSystemHelpers.Instance.DirectoryInfo.FromDirectoryName(Path.Combine(deploymentPath, id)))
-                        .Verify(d => d.Delete(), Times.Never());
-                }
-
-                if (expectedError)
-                {
-                    Mock.Get(analytics).Verify(a => a.UnexpectedException(It.IsAny<Exception>(), true), Times.Once());
-                }
-                else
-                {
-                    Mock.Get(analytics).Verify(a => a.UnexpectedException(It.IsAny<Exception>(), It.IsAny<bool>()), Times.Never());
-                }
+                Mock.Get(FileSystemHelpers.Instance.DirectoryInfo.FromDirectoryName(Path.Combine(deploymentPath, id)))
+                    .Verify(d => d.Delete(), content != null ? Times.Once() : Times.Never());
             }
-            finally
+            else
             {
-                FileSystemHelpers.Instance = null;
+                Assert.NotNull(status);
+
+                Mock.Get(FileSystemHelpers.Instance.DirectoryInfo.FromDirectoryName(Path.Combine(deploymentPath, id)))
+                    .Verify(d => d.Delete(), Times.Never());
             }
+
+            if (!string.IsNullOrEmpty(expectedError))
+            {
+                Mock.Get(analytics).Verify(a => a.UnexpectedException(It.IsAny<Exception>(), true, expectedError, It.IsAny<string>(), It.IsAny<int>()), Times.Once());
+            }
+            else
+            {
+                Mock.Get(analytics).Verify(a => a.UnexpectedException(It.IsAny<Exception>(), It.IsAny<bool>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>()), Times.Never());
+            }
+        }
+
+        [Fact]
+        public void ReturnEmptyCollectionOnLogEntryIdDoesntExist()
+        {
+            //Arrage
+            var fileSystem = MockFileSystem.GetMockFileSystem(@"x:\deployment\deploymentId\log.xml", () => @"<?xml version=""1.0"" encoding=""utf-8""?>
+<entries>
+    <entry time=""2015-07-22T19:42:24.1462725Z"" id=""validId"" type=""0"">
+        <message>Test message</message>
+    </entry>
+</entries>");
+
+            var environment = new Mock<IEnvironment>();
+            environment
+                .Setup(s => s.DeploymentsPath)
+                .Returns(@"x:\deployment");
+
+            var trace = NullTracerFactory.Instance;
+
+            var deploymentManager = CreateDeploymentManager(fileSystem: fileSystem, traceFactory: trace, environment: environment.Object);
+
+            //Act
+            var result = deploymentManager.GetLogEntryDetails("deploymentId", "invalid");
+
+            //Assert
+            Assert.Empty(result);
         }
 
         public static IEnumerable<object[]> DeploymentStatusFileScenarios
@@ -190,11 +206,11 @@ namespace Kudu.Core.Test.Deployment
   <is_temp>False</is_temp>
   <is_readonly>False</is_readonly>
 </deployment>";
-                yield return new object[] { validContent, false, false };
+                yield return new object[] { validContent, false, string.Empty };
 
                 // missing status.xml
                 string missingContent = null;
-                yield return new object[] { missingContent, true, false };
+                yield return new object[] { missingContent, true, string.Empty };
 
                 // invalid xml
                 var partialContent = "<?xml version=\"1.0\" encoding=\"utf-8\"" + @"?>
@@ -209,7 +225,7 @@ namespace Kudu.Core.Test.Deployment
   <statusText></statusText>
   <lastSuccessEndTime>2014-11-16T01:41:39.2074382Z</lastSuccessEndTime>
   <receivedTime>2014-11-16T01:4";
-                yield return new object[] { partialContent, true, true };
+                yield return new object[] { partialContent, true, "Open" };
 
                 // valid xml but missing properties
                 var missingProperty = "<?xml version=\"1.0\" encoding=\"utf-8\"" + @"?>
@@ -221,56 +237,8 @@ namespace Kudu.Core.Test.Deployment
   <message>change 28</message>
   <progress></progress>
 </deployment>";
-                yield return new object[] { missingProperty, true, true };
+                yield return new object[] { missingProperty, true, "Open" };
             }
-        }
-
-        private IFileSystem GetMockFileSystem(string file, Func<string> content)
-        {
-            var fileSystem = new Mock<IFileSystem>(MockBehavior.Strict);
-            var fileBase = new Mock<FileBase>(MockBehavior.Strict);
-            var dirBase = new Mock<DirectoryBase>(MockBehavior.Strict);
-            var dirInfoBase = new Mock<DirectoryInfoBase>(MockBehavior.Strict);
-            var dirInfoFactory = new Mock<IDirectoryInfoFactory>(MockBehavior.Strict);
-
-            // Setup
-            fileSystem.Setup(f => f.File)
-              .Returns(fileBase.Object);
-            fileSystem.Setup(f => f.Directory)
-              .Returns(dirBase.Object);
-            fileSystem.Setup(f => f.DirectoryInfo)
-              .Returns(dirInfoFactory.Object);
-
-            fileBase.Setup(f => f.Exists(It.IsAny<string>()))
-                    .Returns((string path) => path == file && content() != null);
-            fileBase.Setup(f => f.OpenRead(It.IsAny<string>()))
-                    .Returns((string path) =>
-                    {
-                        if (path == file)
-                        {
-                            return new MemoryStream(Encoding.UTF8.GetBytes(content()));
-                        }
-
-                        throw new InvalidOperationException("Should not reach here!");
-                    });
-            fileBase.Setup(f => f.WriteAllText(It.IsAny<string>(), It.IsAny<string>()));
-
-            dirInfoFactory.Setup(d => d.FromDirectoryName(It.IsAny<string>()))
-                          .Returns(dirInfoBase.Object);
-
-            dirBase.Setup(d => d.Exists(It.IsAny<string>()))
-                   .Returns((string path) => path == Path.GetDirectoryName(file));
-
-            dirInfoBase.SetupGet(d => d.Exists)
-                       .Returns(true);
-            dirInfoBase.SetupSet(d => d.Attributes = FileAttributes.Normal);
-            dirInfoBase.Setup(d => d.GetFileSystemInfos())
-                       .Returns(new FileSystemInfoBase[0]);
-            dirInfoBase.Setup(d => d.Delete());
-
-            FileSystemHelpers.Instance = fileSystem.Object;
-
-            return fileSystem.Object;
         }
 
         public class TestDeploymentStatusFile : IDeploymentStatusFile
@@ -306,6 +274,10 @@ namespace Kudu.Core.Test.Deployment
             public bool IsReadOnly { get; set; }
 
             public string SiteName { get; set; }
+
+            public string ProjectType { get; set; }
+
+            public string VsProjectId { get; set; }
 
             public void Save()
             {

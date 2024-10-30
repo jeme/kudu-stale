@@ -3,7 +3,15 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Xml.Linq;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Kudu.Contracts.Infrastructure;
+using Kudu.Contracts.Tracing;
+using Kudu.Contracts.Settings;
+using Kudu.Core.Settings;
 using Kudu.Core.SourceControl;
+using Kudu.Core.Tracing;
+using Kudu.Core.Helpers;
 
 namespace Kudu.Core.Infrastructure
 {
@@ -24,8 +32,8 @@ namespace Kudu.Core.Infrastructure
         /// </summary>
         public static IList<VsSolution> FindContainingSolutions(string repositoryPath, string targetPath, IFileFinder fileFinder)
         {
-            string solutionsPath = PathUtility.CleanPath(targetPath);
-            repositoryPath = PathUtility.CleanPath(repositoryPath);
+            string solutionsPath = PathUtilityFactory.Instance.CleanPath(targetPath);
+            repositoryPath = PathUtilityFactory.Instance.CleanPath(repositoryPath);
 
             while (solutionsPath != null && solutionsPath.Contains(repositoryPath))
             {
@@ -38,7 +46,7 @@ namespace Kudu.Core.Infrastructure
                     return solutionsFound.ToList();
                 }
 
-                if (PathUtility.PathsEquals(solutionsPath, repositoryPath))
+                if (PathUtilityFactory.Instance.PathsEquals(solutionsPath, repositoryPath))
                 {
                     break;
                 }
@@ -66,9 +74,46 @@ namespace Kudu.Core.Infrastructure
             return solutions[0];
         }
 
-        public static bool IsWap(string projectPath)
+        public static string GetProjectSDK(string path)
         {
-            return IsWap(GetProjectTypeGuids(projectPath));
+            try
+            {
+                string document = File.ReadAllText(path);
+                return GetProjectSDKContent(document);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        public static string GetProjectSDKContent(string content)
+        {
+            try
+            {
+                XDocument document = XDocument.Parse(content);
+                var projectElement = document.Root;
+                if (projectElement == null
+                    || projectElement.Value == null
+                    || projectElement.Attribute("Sdk") == null
+                    || projectElement.Attribute("Sdk").Value == null)
+                {
+                    return string.Empty;
+                }
+                else
+                {
+                    return projectElement.Attribute("Sdk").Value;
+                }
+            }
+            catch(Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        public static Boolean IsAspNetCoreSDK(string sdk)
+        {
+            return sdk.Equals("Microsoft.NET.Sdk.Web");
         }
 
         public static bool IsWap(IEnumerable<Guid> projectTypeGuids)
@@ -78,62 +123,233 @@ namespace Kudu.Core.Infrastructure
 
         public static IEnumerable<Guid> GetProjectTypeGuids(string path)
         {
-            var document = XDocument.Parse(File.ReadAllText(path));
+            // only exist in old csprojs
+            var projectTypeGuids = GetPropertyValues(path, "ProjectTypeGuids", Csproj.oldFormat);
 
-            var guids = from propertyGroup in document.Root.Elements(GetName("PropertyGroup"))
-                        let projectTypeGuids = propertyGroup.Element(GetName("ProjectTypeGuids"))
-                        where projectTypeGuids != null
-                        from guid in projectTypeGuids.Value.Split(';')
+            var guids = from value in projectTypeGuids
+                        from guid in value.Split(';')
                         select new Guid(guid.Trim('{', '}'));
             return guids;
         }
 
-        public static bool IsExecutableProject(string projectPath)
+        // takes multiple package names, return true if at least one is presented
+        public static bool IncludesAnyReferencePackage(string path, params string[] packageNames)
         {
-            var document = XDocument.Parse(File.ReadAllText(projectPath));
+            var packages = from packageReferences in XDocument.Load(path).Descendants("PackageReference")
+                           let packageReferenceName = packageReferences.Attribute("Include")
+                           where packageReferenceName != null && packageNames.Contains(packageReferenceName.Value, StringComparer.OrdinalIgnoreCase)
+                           select packageReferenceName.Value;
 
-            var root = document.Root;
-            if (root == null)
-            {
-                return false;
-            }
-
-            var outputTypes = from propertyGroup in root.Elements(GetName("PropertyGroup"))
-                              let outputType = propertyGroup.Element(GetName("OutputType"))
-                              where outputType != null && String.Equals(outputType.Value, "exe", StringComparison.OrdinalIgnoreCase)
-                              select outputType.Value;
-
-            return outputTypes.Any();
+            return packages.Any();
         }
 
-        public static string GetProjectExecutableName(string path)
+        public static IEnumerable<string> GetPropertyValues(string path, string propertyName, Csproj projectFormat)
         {
             var document = XDocument.Parse(File.ReadAllText(path));
+            IEnumerable<string> propertyValues = Enumerable.Empty<string>();
 
             var root = document.Root;
             if (root == null)
             {
-                return null;
+                return propertyValues;
             }
 
-            var assemblyNames = from propertyGroup in root.Elements(GetName("PropertyGroup"))
-                                let assemblyName = propertyGroup.Element(GetName("AssemblyName"))
-                                where assemblyName != null
-                                select assemblyName.Value;
+            if (((int)projectFormat & 1) != 0)
+            {
+                propertyValues = from propertyGroup in document.Root.Elements(GetName("PropertyGroup"))
+                                 let property = propertyGroup.Element(GetName(propertyName))
+                                 where property != null
+                                 select property.Value;
 
-            return assemblyNames.FirstOrDefault();
+            }
+            // if found already, we can return
+            // else if the property possibly exists in the new csproj, we run query without namespace
+            if (!propertyValues.Any() && ((int)projectFormat & 2) != 0)
+            {
+                // new csproj does not have a namespace:http://schemas.microsoft.com/developer/msbuild/2003
+                propertyValues = from propertyGroup in root.Elements(XName.Get("PropertyGroup"))
+                                 let property = propertyGroup.Element(XName.Get(propertyName))
+                                 where property != null
+                                 select property.Value;
+            }
+
+            return propertyValues;
+        }
+
+        public static bool IsExecutableProject(string projectPath)
+        {
+            var outputTypes = GetPropertyValues(projectPath, "OutputType", Csproj.bothFormat);
+            return outputTypes.Contains("exe", StringComparer.OrdinalIgnoreCase);
         }
 
         private static bool ExistsInSolution(VsSolution solution, string targetPath)
         {
             return (from p in solution.Projects
-                    where PathUtility.PathsEquals(p.AbsolutePath, targetPath)
+                    where PathUtilityFactory.Instance.PathsEquals(p.AbsolutePath, targetPath)
                     select p).Any();
+        }
+
+        public static string GetTargetFrameworkJson(string path)
+        {
+            try
+            {
+                string document = File.ReadAllText(path);
+                return GetTargetFrameworkJsonContents(document);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        public static string GetTargetFrameworkJsonContents(string content)
+        {
+            try
+            {
+                var document = JObject.Parse(content);
+                string targetFramework = (string)document["frameworks"].First.ToString()
+                    .Replace("\"", "")
+                    .Replace(":", "")
+                    .Replace("{", "")
+                    .Replace("}", "")
+                    .Trim();
+                if (String.IsNullOrEmpty(targetFramework))
+                {
+                    // old-style .csproj
+                    return string.Empty;
+                }
+                else
+                {
+                    KuduEventSource.Log.GenericEvent(
+                            ServerConfiguration.GetRuntimeSiteName(),
+                            string.Format("Dotnet target framework found: {0}", targetFramework),
+                            string.Empty,
+                            string.Empty,
+                            string.Empty,
+                            EnvironmentHelper.KuduVersion.Value,
+                            EnvironmentHelper.AppServiceVersion.Value);
+                    return targetFramework;
+                }
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
         }
 
         private static XName GetName(string name)
         {
             return XName.Get(name, "http://schemas.microsoft.com/developer/msbuild/2003");
         }
+
+        public static bool UseMSBuild16()
+        {
+            String var = System.Environment.GetEnvironmentVariable(String.Format("APPSETTING_{0}", SettingsKeys.UseMSBuild16));
+            if (string.IsNullOrEmpty(var))
+            {
+                return !StringUtils.IsFalseLike(ScmHostingConfigurations.GetValue(SettingsKeys.UseMSBuild16, "true"));
+            }
+            else
+            {
+                return !StringUtils.IsFalseLike(var);
+            }
+        }
+
+        public static bool UseMSBuild1607()
+        {
+            String var = System.Environment.GetEnvironmentVariable(String.Format("APPSETTING_{0}", SettingsKeys.UseMSBuild1607));
+            if (string.IsNullOrEmpty(var))
+            {
+                return StringUtils.IsTrueLike(ScmHostingConfigurations.GetValue(SettingsKeys.UseMSBuild1607, "false"));
+            }
+            else
+            {
+                return StringUtils.IsTrueLike(var);
+            }
+        }
+
+        public static string MSBuildVersion
+        {
+            get
+            {
+                var var = System.Environment.GetEnvironmentVariable(String.Format("APPSETTING_{0}", SettingsKeys.MSBuildVersion));
+                if (string.IsNullOrEmpty(var))
+                {
+                    return ScmHostingConfigurations.GetValue(SettingsKeys.MSBuildVersion);
+                }
+                else
+                {
+                    return null;
+                }
+            }
+        }
+
+        public static string GetTargetFramework(string path)
+        {
+            try
+            {
+                string document = File.ReadAllText(path);
+                return GetTargetFrameworkContents(document);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        public static string GetTargetFrameworkContents(string content)
+        {
+            try
+            {
+                XDocument document = XDocument.Parse(content);
+                var targetFramework = document.Root.Descendants("TargetFramework");
+                var targetFrameworkElement = targetFramework.FirstOrDefault();
+                if (targetFrameworkElement == null || targetFrameworkElement.Value == null)
+                {
+                    // old-style .csproj
+                    return string.Empty;
+                }
+                else
+                {
+                    KuduEventSource.Log.GenericEvent(
+                            ServerConfiguration.GetRuntimeSiteName(),
+                            $"Dotnet target framework found: {targetFrameworkElement?.Value}",
+                            string.Empty,
+                            string.Empty,
+                            string.Empty,
+                            EnvironmentHelper.KuduVersion.Value,
+                            EnvironmentHelper.AppServiceVersion.Value);
+                    return targetFrameworkElement.Value;
+                }
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        public static bool IsNewDotNetCoreMajorVersion(string target)
+        {
+            // Currently only for .NET 5.0 and 6.0
+            return target.StartsWith("net5.0", StringComparison.OrdinalIgnoreCase) || target.StartsWith("net6.0", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool IsDotNet31Version(string target)
+        {
+            return target != null && target.StartsWith("netcoreapp3.1", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool IsDotNet7Version(string target)
+        {
+            return target != null && target.StartsWith("net7.0", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool IsDotNet8Version(string target)
+        {
+            return target != null && target.StartsWith("net8.0", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // 01, 10, 11 in binares
+        public enum Csproj { oldFormat = 1, newFormat, bothFormat }
     }
 }

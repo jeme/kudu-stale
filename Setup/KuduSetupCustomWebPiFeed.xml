@@ -32,7 +32,7 @@
           <productId>NodeJS_0_10_35</productId>
         </dependency>
         <dependency>
-          <productId>iisnode_0_2_11</productId>
+          <productId>iisnode_0_2_21</productId>
         </dependency>
         <dependency>
           <productId>StaticContent</productId>
@@ -67,6 +67,12 @@
         <!-- VS 2013 for MSBuild -->
         <dependency>
           <productId>VS2013_CE_Only_Wrapper</productId>
+        </dependency>
+        <dependency>
+          <productId>NETFramework46</productId>
+        </dependency>
+        <dependency>
+          <productId>MicrosoftBuildTools2015</productId>
         </dependency>
       </and>
     </dependency>
@@ -217,11 +223,11 @@
   </entry>
   <!-- entry for iisnode locked to a known version -->
   <entry>
-    <productId>iisnode_0_2_11</productId>
+    <productId>iisnode_0_2_21</productId>
     <metadata>
       <title>iisnode for iis 7/8 (x64)</title>
-      <id>https://github.com/azure/iisnode/releases/download/v0.2.11/iisnode-full-v0.2.11-x64.msi</id>
-      <version>0.2.11</version>
+      <id>https://github.com/tjanczuk/iisnode/releases/download/v0.2.21/iisnode-full-v0.2.21-x64.msi</id>
+      <version>0.2.21</version>
       <updated>2014-10-07</updated>
       <published>2014-10-07</published>
       <summary>iisnode for iis 7/8 (x64)</summary>
@@ -237,13 +243,13 @@
         <discoveryHint>
           <file>
             <filePath>%programfiles%\iisnode\iisnode.dll</filePath>
-            <minimumVersion>0.2.11.0</minimumVersion>
+            <minimumVersion>0.2.21.0</minimumVersion>
           </file>
         </discoveryHint>
         <discoveryHint>
           <file>
             <filePath>%programfiles(x86)%\iisnode\iisnode.dll</filePath>
-            <minimumVersion>0.2.11.0</minimumVersion>
+            <minimumVersion>0.2.21.0</minimumVersion>
           </file>
         </discoveryHint>
       </or>
@@ -262,8 +268,8 @@
         </osList>
         <installerFile>
           <fileSize>2072576</fileSize>
-          <installerURL>https://github.com/azure/iisnode/releases/download/v0.2.11/iisnode-full-v0.2.11-x64.msi</installerURL>
-          <sha1>D2AA5A51D54B7695A93257E4B3507759789A9887</sha1>
+          <installerURL>https://github.com/tjanczuk/iisnode/releases/download/v0.2.21/iisnode-full-v0.2.21-x64.msi</installerURL>
+          <sha1>c12ea95d03ed60fe7b9a8952580039902fdde37a</sha1>
         </installerFile>
         <installCommands>
           <msiInstall>
@@ -353,14 +359,26 @@
     </dependency>
     <!-- 
 			Visual Studio 2013: HKEY_CLASSES_ROOT\VisualStudio.DTE.12.0
+			Visual Studio 2014: HKEY_CLASSES_ROOT\VisualStudio.DTE.13.0
+			Visual Studio 2015: HKEY_CLASSES_ROOT\VisualStudio.DTE.14.0
 			Visual Studio Express 2013: HKEY_CLASSES_ROOT\VWDExpress.DTE.12.0
-			which mean, if machine already had any version of VS 2013 installed, we will skip VS installation
+			which mean, if machine already if these VS installed, we will skip VS installation
 		-->
     <discoveryHint>
       <or>
         <discoveryHint>
           <registry>
             <keyPath>HKEY_CLASSES_ROOT\VisualStudio.DTE.12.0</keyPath>
+          </registry>
+        </discoveryHint>
+		<discoveryHint>
+          <registry>
+            <keyPath>HKEY_CLASSES_ROOT\VisualStudio.DTE.13.0</keyPath>
+          </registry>
+        </discoveryHint>
+		<discoveryHint>
+          <registry>
+            <keyPath>HKEY_CLASSES_ROOT\VisualStudio.DTE.14.0</keyPath>
           </registry>
         </discoveryHint>
         <discoveryHint>
@@ -383,4 +401,110 @@
       </installer>
     </installers>
   </entry>
+
+  <!-- .net framework 4.6 -->
+  <entry>
+    <productId>NETFramework46</productId>
+    <title>Microsoft .NET Framework 4.6</title>
+    <version>4.6</version>
+    <summary>.NET Framework 4.6 for Windows Vista SP2, 7 SP1, 8, 8.1, Windows Server 2008 SP2, 2008 R2 SP1, 2012 and 2012 R2 (x86 and x64) - Offline Installer (Multiple Languages).</summary>
+    <longSummary>The Microsoft .NET Framework 4.6 is a highly compatible, in-place update to the Microsoft .NET Framework 4, Microsoft .NET Framework 4.5, Microsoft .NET Framework 4.5.1 and Microsoft .NET Framework 4.5.2.</longSummary>
+    <author>
+      <name>Microsoft</name>
+      <uri>http://www.microsoft.com</uri>
+    </author>
+    <keywords>
+      <keywordId>FrameworkRuntime</keywordId>
+    </keywords>
+    <discoveryHint>
+      <registry>
+	<keyPath>HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full</keyPath>
+        <valueName>Version</valueName>
+        <minimumVersion>4.6.00081</minimumVersion>
+      </registry>
+    </discoveryHint>
+    <installers>
+      <installer>
+        <id>1</id>
+        <languageId>en</languageId>
+	      <architectures>
+          <x64 />
+          <x86 />
+        </architectures>
+        <osList>
+          <os>
+            <minimumVersion>
+              <osMajorVersion>6</osMajorVersion>
+              <osMinorVersion>0</osMinorVersion>
+            </minimumVersion>
+          </os>
+        </osList>
+        <installerFile>
+          <installerURL>http://download.microsoft.com/download/C/3/A/C3A5200B-D33C-47E9-9D70-2F7C65DAAD94/NDP46-KB3045557-x86-x64-AllOS-ENU.exe</installerURL>
+        </installerFile>
+        <installCommands>
+          <cmdline>
+            <exe>%InstallerFile%</exe>
+            <commandLineArguments>/q /chainingpackage webpi /norestart /log %temp%\dd_dotnetfx46install.html</commandLineArguments>
+            <ignoreExitCode>False</ignoreExitCode>
+          </cmdline>
+        </installCommands>
+      </installer>
+    </installers>
+  </entry>
+  <!-- end .net framework 4.6 -->
+  
+  <!-- build tools 2015 -->
+  <entry>
+    <productId>MicrosoftBuildTools2015</productId>
+    <title>Microsoft Build Tools 2015</title>
+    <version>14.0.23107</version>
+    <summary>Microsoft Build Tools 2013 provides the essential tools for building managed applications.</summary>
+    <author>
+      <name>Microsoft</name>
+      <uri>http://www.microsoft.com</uri>
+    </author>
+    <discoveryHint>
+      <registry>
+        <keyPath>HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\DevDiv\BuildTools\Servicing\14.0\MSBuild\</keyPath>
+        <valueName>Version</valueName>
+        <minimumVersion>14.0.23107</minimumVersion>
+      </registry>
+    </discoveryHint>
+    <installers>
+      <installer>
+        <id>1</id>
+        <languageId>en</languageId>
+        <architectures>
+          <x64 />
+        </architectures>
+        <osList>
+          <os>
+            <minimumVersion>
+              <osMajorVersion>6</osMajorVersion>
+              <osMinorVersion>0</osMinorVersion>
+              <spMajorVersion>1</spMajorVersion>
+            </minimumVersion>
+            <osTypes>
+              <Server />
+              <HomePremium />
+              <Ultimate />
+              <Enterprise />
+              <Business />
+            </osTypes>
+          </os>
+        </osList>
+        <installerFile>
+          <installerURL>http://download.microsoft.com/download/E/E/D/EEDF18A8-4AED-4CE0-BEBE-70A83094FC5A/BuildTools_Full.exe</installerURL>
+        </installerFile>
+        <installCommands>
+          <cmdline>
+            <exe>%InstallerFile%</exe>
+            <commandLineArguments>/Q /NoRestart /Log %temp%\msbuild14install.log</commandLineArguments>
+          </cmdline>
+        </installCommands>
+      </installer>
+    </installers>
+  </entry>
+  <!-- end build tools 2015 -->
 </feed>

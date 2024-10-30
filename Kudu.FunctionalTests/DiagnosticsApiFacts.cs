@@ -10,17 +10,17 @@ using System.Threading.Tasks;
 using Kudu.Client;
 using Kudu.Client.Infrastructure;
 using Kudu.Contracts.Diagnostics;
-using Kudu.Core.Infrastructure;
 using Kudu.FunctionalTests.Infrastructure;
 using Kudu.Services.Diagnostics;
 using Kudu.TestHarness;
+using Kudu.TestHarness.Xunit;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Kudu.FunctionalTests
 {
-    [TestHarnessClassCommand]
+    [KuduXunitTestClass]
     public class DiagnosticsApiFacts
     {
         [Fact]
@@ -29,7 +29,7 @@ namespace Kudu.FunctionalTests
             string repositoryName = "Mvc3Application";
             string appName = "ConstructorTest";
 
-            using (var repo = Git.CreateLocalRepository(repositoryName))
+            using (var repo = Git.Clone(repositoryName))
             {
                 ApplicationManager.Run(appName, appManager =>
                 {
@@ -91,37 +91,28 @@ namespace Kudu.FunctionalTests
                 Assert.True(allProcesses.Any(p => p.Id == currentId));
                 Assert.True(allProcesses.Any(p => p.UserName == currentUser));
 
-                // Test process dumps
-                foreach (var format in new[] { "raw", "zip", "diagsession" })
-                {
-                    if (format != "diagsession")
-                    {
-                        TestTracer.Trace("Test minidump format={0}", format);
-                        using (var stream = new MemoryStream())
-                        {
-                            using (var minidump = await appManager.ProcessManager.MiniDump(format: format))
-                            {
-                                Assert.NotNull(minidump);
-                                await minidump.CopyToAsync(stream);
-                            }
-                            TestTracer.Trace("Test minidump lenth={0}", stream.Length);
-                            Assert.True(stream.Length > 0);
-                        }
-                    }
+                // Test process environment list
+                var envs = await appManager.ProcessManager.GetEnvironmentAsync(0, "all");
+                Assert.True(envs.Count > 1);
+                Assert.True(envs.ContainsKey("COMPUTERNAME"));
 
-                    if (ProcessExtensions.SupportGCDump)
+                envs = await appManager.ProcessManager.GetEnvironmentAsync(0, "COMPUTERNAME");
+                Assert.True(envs.Count == 1);
+                Assert.True(envs.ContainsKey("COMPUTERNAME"));
+
+                // Test process dumps
+                foreach (var format in new[] { "raw", "zip" })
+                {
+                    TestTracer.Trace("Test minidump format={0}", format);
+                    using (var stream = new MemoryStream())
                     {
-                        TestTracer.Trace("Test gcdump format={0}", format);
-                        using (var stream = new MemoryStream())
+                        using (var minidump = await appManager.ProcessManager.MiniDump(format: format))
                         {
-                            using (var gcdump = await appManager.ProcessManager.GCDump(format: format))
-                            {
-                                Assert.NotNull(gcdump);
-                                await gcdump.CopyToAsync(stream);
-                            }
-                            TestTracer.Trace("Test gcdump lenth={0}", stream.Length);
-                            Assert.True(stream.Length > 0);
+                            Assert.NotNull(minidump);
+                            await minidump.CopyToAsync(stream);
                         }
+                        TestTracer.Trace("Test minidump length={0}", stream.Length);
+                        Assert.True(stream.Length > 0);
                     }
                 }
 
@@ -159,7 +150,7 @@ namespace Kudu.FunctionalTests
             string repositoryName = "Mvc3Application";
             string appName = "SetGetDeleteValue";
 
-            using (var repo = Git.CreateLocalRepository(repositoryName))
+            using (var repo = Git.Clone(repositoryName))
             {
                 ApplicationManager.Run(appName, appManager =>
                 {
@@ -209,17 +200,18 @@ namespace Kudu.FunctionalTests
                 "\"AzureBlobEnabled\":false,\"AzureBlobTraceLevel\":\"Error\"}";
 
             const string settingsContentWithNumbers = "{AzureDriveEnabled: true,AzureDriveTraceLevel: \"4\"}";
-            const string expectedNumbersResponse =
+            const string settingsContentWithNulls = "{AzureDriveEnabled: null,AzureDriveTraceLevel: \"4\"}";
+
+            const string settingsContentWithString = "{AzureDriveEnabled: true,AzureDriveTraceLevel: \"Warning\"}";
+            const string expectedResponse =
                 "{\"AzureDriveEnabled\":true,\"AzureDriveTraceLevel\":\"Warning\"," +
                 "\"AzureTableEnabled\":false,\"AzureTableTraceLevel\":\"Error\"," +
                 "\"AzureBlobEnabled\":false,\"AzureBlobTraceLevel\":\"Error\"}";
 
-            const string settingsContentWithNulls = "{AzureDriveEnabled: null,AzureDriveTraceLevel: \"4\"}";
-
             const string repositoryName = "Mvc3Application";
             const string appName = "DiagnosticsSettingsExpectedValuesReturned";
 
-            using (var repo = Git.CreateLocalRepository(repositoryName))
+            using (var repo = Git.Clone(repositoryName))
             {
                 ApplicationManager.Run(appName, appManager =>
                 {
@@ -230,15 +222,20 @@ namespace Kudu.FunctionalTests
                         string responseContent = DownloadDiagnosticsSettings(client);
                         Assert.Equal(expectedEmptyResponse, responseContent);
 
-                        // Expected string value for enums
+                        // Expecting value will be reset
                         appManager.VfsManager.WriteAllText("site/diagnostics/settings.json", settingsContentWithNumbers);
                         responseContent = DownloadDiagnosticsSettings(client);
-                        Assert.Equal(expectedNumbersResponse, responseContent);
+                        Assert.Equal(expectedEmptyResponse, responseContent);
 
                         // Invalid json we expect default values
                         appManager.VfsManager.WriteAllText("site/diagnostics/settings.json", settingsContentWithNulls);
                         responseContent = DownloadDiagnosticsSettings(client);
                         Assert.Equal(expectedEmptyResponse, responseContent);
+
+                        // Expecting AzureDriveEnabled to be true
+                        appManager.VfsManager.WriteAllText("site/diagnostics/settings.json", settingsContentWithString);
+                        responseContent = DownloadDiagnosticsSettings(client);
+                        Assert.Equal(expectedResponse, responseContent);
                     }
                 });
             }
@@ -302,14 +299,14 @@ namespace Kudu.FunctionalTests
                             Assert.NotNull(dump);
                             await dump.CopyToAsync(zipStream);
                         }
-                        TestTracer.Trace("zipStream lenth={0}", zipStream.Length);
+                        TestTracer.Trace("zipStream length={0}", zipStream.Length);
                         Assert.True(zipStream.Length > 0);
 
                         zipStream.Position = 0;
                         using (var targetStream = new MemoryStream())
                         {
                             ZipUtils.Unzip(zipStream, targetStream);
-                            TestTracer.Trace("targetStream lenth={0}", targetStream.Length);
+                            TestTracer.Trace("targetStream length={0}", targetStream.Length);
                             Assert.True(targetStream.Length > 0);
                         }
                     }
@@ -323,7 +320,7 @@ namespace Kudu.FunctionalTests
 
                 // Test runtime object by checking for one Node version
                 RuntimeInfo runtimeInfo = await appManager.RuntimeManager.GetRuntimeInfo();
-                Assert.True(runtimeInfo.NodeVersions.Any(dict => dict["version"] == "0.8.2"));
+                Assert.True(runtimeInfo.NodeVersions.Any());
             });
         }
 

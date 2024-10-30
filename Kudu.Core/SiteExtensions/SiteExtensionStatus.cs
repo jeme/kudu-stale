@@ -124,8 +124,9 @@ namespace Kudu.Core.SiteExtensions
         }
 
         /// <summary>
-        /// <para>Loop thru all site extension settings files under 'siteExtensionStatusRoot', check if there is any successful installation</para>
-        /// <para>if not install to webroot, will trigger restart; if install to webroot and with applicationHost.xdt file, trigger restart.</para>
+        /// <para>Scan every site extensions, check if there is any successful installation</para>
+        /// <para>Looking for below cases:</para>
+        /// <para>if not install to webroot, trigger restart; if install to webroot and with applicationHost.xdt file, trigger restart.</para>
         /// </summary>
         /// <param name="siteExtensionStatusRoot">should be $ROOT\site\siteextensions</param>
         /// <param name="siteExtensionRoot">should be $ROOT\SiteExtensions</param>
@@ -133,26 +134,26 @@ namespace Kudu.Core.SiteExtensions
         {
             try
             {
-                string[] packageDirs = FileSystemHelpers.GetDirectories(siteExtensionStatusRoot);
-                foreach (var dir in packageDirs)
+                using (tracer.Step("Checking if there is any installation require site restart ..."))
                 {
-                    try
+                    string[] packageDirs = FileSystemHelpers.GetDirectories(siteExtensionStatusRoot);
+                    // folder name is the package id
+                    foreach (var dir in packageDirs)
                     {
-                        DirectoryInfo dirInfo = new DirectoryInfo(dir);
-                        string[] settingFile = FileSystemHelpers.GetFiles(dir, _statusSettingsFileName);
-                        foreach (var file in settingFile)
+                        try
                         {
+                            DirectoryInfo dirInfo = new DirectoryInfo(dir);
                             var statusSettings = new SiteExtensionStatus(siteExtensionStatusRoot, dirInfo.Name, tracer);
                             if (statusSettings.IsSiteExtensionRequireRestart(siteExtensionRoot))
                             {
                                 return true;
                             }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        analytics.UnexpectedException(ex, trace: false);
-                        tracer.TraceError(ex, "Failed to query {0} under {1}, continus to check others ...", _statusSettingsFileName, dir);
+                        catch (Exception ex)
+                        {
+                            analytics.UnexpectedException(ex, trace: false);
+                            tracer.TraceError(ex, "Failed to query {0} under {1}, continuos to check others ...", _statusSettingsFileName, dir);
+                        }
                     }
                 }
             }
@@ -178,11 +179,14 @@ namespace Kudu.Core.SiteExtensions
                 }
                 else
                 {
-                    // if it is intalled to webroot, restart site ONLY if there is an applicationHost.xdt file under site extension folder
+                    // if it is installed to webroot, restart site ONLY if there is an applicationHost.xdt/scmApplicationHost.xdt file under site extension folder
                     DirectoryInfo dirInfo = new DirectoryInfo(Path.GetDirectoryName(_filePath));
                     // folder name is the id of the package
                     string xdtFilePath = Path.Combine(siteExtensionRoot, dirInfo.Name, Constants.ApplicationHostXdtFileName);
-                    return File.Exists(xdtFilePath);
+                    // technically if it's "applicationHost.xdt", we should restart only the main site
+                    // but for backwards compatability, if either one is detected, we tell the GEO master to restart the SCM SITE
+                    string scmXdtFilePath = Path.Combine(siteExtensionRoot, dirInfo.Name, Constants.ScmApplicationHostXdtFileName);
+                    return FileSystemHelpers.FileExists(xdtFilePath) || FileSystemHelpers.FileExists(scmXdtFilePath);
                 }
             }
 

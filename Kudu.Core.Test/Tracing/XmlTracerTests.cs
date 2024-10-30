@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Abstractions;
@@ -13,7 +14,6 @@ using Kudu.Core.Infrastructure;
 using Kudu.Core.Tracing;
 using Moq;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.Core.Test.Tracing
 {
@@ -27,33 +27,25 @@ namespace Kudu.Core.Test.Tracing
             var tracer = new XmlTracer(path, TraceLevel.Verbose);
             FileSystemHelpers.Instance = GetMockFileSystem();
 
-            try
+            var total = XmlTracer.MaxXmlFiles + 10;
+            for (int i = 0; i < total; ++i)
             {
-                var total = XmlTracer.MaxXmlFiles + 10;
-                for (int i = 0; i < total; ++i)
-                {
-                    tracer.Trace(Guid.NewGuid().ToString(), new Dictionary<string, string>());
-                }
-
-                var files = FileSystemHelpers.GetFiles(path, "*.xml");
-                Assert.Equal(total, files.Length);
-
-                // wait till interval and write another trace
-                typeof(XmlTracer).GetField("_lastCleanup", BindingFlags.Static | BindingFlags.NonPublic).SetValue(null, DateTime.MinValue);
                 tracer.Trace(Guid.NewGuid().ToString(), new Dictionary<string, string>());
+            }
 
-                files = FileSystemHelpers.GetFiles(path, "*.xml");
-                Assert.True(files.Length < XmlTracer.MaxXmlFiles);
-            }
-            catch (Exception)
-            {
-                FileSystemHelpers.Instance = null;
-                throw;
-            }
+            var files = FileSystemHelpers.GetFiles(path, "*.xml");
+            Assert.Equal(total, files.Length);
+
+            // wait till interval and write another trace
+            typeof(XmlTracer).GetField("_lastCleanup", BindingFlags.Static | BindingFlags.NonPublic).SetValue(null, DateTime.MinValue);
+            tracer.Trace(Guid.NewGuid().ToString(), new Dictionary<string, string>());
+
+            files = FileSystemHelpers.GetFiles(path, "*.xml");
+            Assert.True(files.Length < XmlTracer.MaxXmlFiles);
         }
 
         [Theory]
-        [PropertyData("Requests")]
+        [MemberData("Requests")]
         public void TracerRequestsTest(TraceLevel traceLevel, RequestInfo[] requests)
         {
             // Mock
@@ -61,50 +53,42 @@ namespace Kudu.Core.Test.Tracing
             var tracer = new XmlTracer(path, traceLevel);
             FileSystemHelpers.Instance = GetMockFileSystem();
 
-            try
+            foreach (var request in requests)
             {
-                foreach (var request in requests)
+                Dictionary<string, string> attribs = new Dictionary<string, string>
                 {
-                    Dictionary<string, string> attribs = new Dictionary<string, string>
-                    {
-                        { "type", "request" },
-                        { "url", request.Url },
-                        { "method", "GET" },
-                        { "statusCode", ((int)request.StatusCode).ToString() },
-                    };
+                    { "type", "request" },
+                    { "url", request.Url },
+                    { "method", "GET" },
+                    { "statusCode", ((int)request.StatusCode).ToString() },
+                };
 
-                    using (tracer.Step("Incoming Request", attribs))
-                    {
-                        tracer.Trace("Outgoing response", attribs);
-                    }
-                }
-
-                var traces = new List<RequestInfo>();
-                foreach (var file in FileSystemHelpers.GetFiles(path, "*s.xml").OrderBy(n => n))
+                using (tracer.Step("Incoming Request", attribs))
                 {
-                    var document = XDocument.Load(FileSystemHelpers.OpenRead(file));
-                    var trace = new RequestInfo { Url = document.Root.Attribute("url").Value };
-                    var elapsed = document.Root.Nodes().Last();
-
-                    // Assert
-                    Assert.Equal(XmlNodeType.Comment, elapsed.NodeType);
-                    Assert.Contains("duration:", ((XComment)elapsed).Value);
-
-                    traces.Add(trace);
+                    tracer.Trace("Outgoing response", attribs);
                 }
+            }
+
+            var traces = new List<RequestInfo>();
+            foreach (var file in FileSystemHelpers.GetFiles(path, "*s.xml").OrderBy(n => n))
+            {
+                var document = XDocument.Load(FileSystemHelpers.OpenRead(file));
+                var trace = new RequestInfo { Url = document.Root.Attribute("url").Value };
+                var elapsed = document.Root.Nodes().Last();
 
                 // Assert
-                Assert.Equal(requests.Where(r => r.Traced), traces, RequestInfoComparer.Instance);
+                Assert.Equal(XmlNodeType.Comment, elapsed.NodeType);
+                Assert.Contains("duration:", ((XComment)elapsed).Value);
+
+                traces.Add(trace);
             }
-            catch (Exception)
-            {
-                FileSystemHelpers.Instance = null;
-                throw;
-            }
+
+            // Assert
+            Assert.Equal(requests.Where(r => r.Traced), traces, RequestInfoComparer.Instance);
         }
 
         [Theory]
-        [PropertyData("TraceRequests")]
+        [MemberData("TraceRequests")]
         public void TraceFiltersTests(bool expected, TraceLevel level, TraceInfo info, int statusCode)
         {
             Assert.Equal(expected, XmlTracer.ShouldTrace(level, info, statusCode));
@@ -235,8 +219,9 @@ namespace Kudu.Core.Test.Tracing
         [Theory]
         [InlineData(true, TraceExtensions.AlwaysTrace)]
         [InlineData(true, TraceExtensions.TraceLevelKey)]
+        [InlineData(true, "X-MS-CLIENT-PRINCIPAL-NAME")]
         [InlineData(true, "Max-Forwards")]
-        [InlineData(true, "X-ARR-LOG-ID")]
+        [InlineData(false, "X-ARR-LOG-ID")]
         [InlineData(false, "url")]
         [InlineData(false, "method")]
         [InlineData(false, "type")]
@@ -260,6 +245,38 @@ namespace Kudu.Core.Test.Tracing
             mock.Setup(req => req.UserAgent).Returns(userAgent);
             HttpRequestBase request = mock.Object;
             Assert.Equal(expected, TraceExtensions.ShouldSkipRequest(request));
+        }
+
+        [Theory]
+        [InlineData(true, "XMLHttpRequest")]
+        [InlineData(false, null)]
+        [InlineData(false, "")]
+        [InlineData(false, "unknown")]
+        [InlineData(false, null)]
+        public void IsAjaxRequestTests(bool expected, string header)
+        {
+            var mock = new Mock<HttpRequestBase>();
+            var headers = new NameValueCollection();
+            headers.Add("X-REQUESTED-WITH", header);
+            mock.Setup(req => req.Headers).Returns(headers);
+            HttpRequestBase request = mock.Object;
+            Assert.Equal(expected, TraceExtensions.IsAjaxRequest(request));
+        }
+
+        [Theory]
+        [InlineData(false, null)]
+        [InlineData(false, "https://tempuri.org/")]
+        [InlineData(true, "https://attacker.org/")]
+        [InlineData(true, "null")]
+        public void MismatchHostRefererTests(bool expected, string referer)
+        {
+            var mock = new Mock<HttpRequestBase>();
+            var headers = new NameValueCollection();
+            headers.Add("Referer", referer);
+            mock.Setup(req => req.Headers).Returns(headers);
+            mock.Setup(req => req.Url).Returns(new Uri("https://tempuri.org/"));
+            HttpRequestBase request = mock.Object;
+            Assert.Equal(expected, TraceExtensions.MismatchedHostReferer(request));
         }
 
         public static IEnumerable<object[]> Requests

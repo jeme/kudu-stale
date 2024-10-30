@@ -60,7 +60,7 @@ namespace Kudu.Services.Infrastructure
             }
         }
 
-        public static IEnumerable<VfsStatEntry> GetEntries(string baseAddress)
+        public static IEnumerable<VfsStatEntry> GetEntries(string baseAddress, string query)
         {
             if (!String.IsNullOrEmpty(SystemDrivePath))
             {
@@ -69,8 +69,9 @@ namespace Kudu.Services.Infrastructure
                 {
                     Name = SystemDriveFolder,
                     MTime = dir.LastWriteTimeUtc,
+                    CRTime = dir.CreationTimeUtc,
                     Mime = "inode/shortcut",
-                    Href = baseAddress + Uri.EscapeUriString(SystemDriveFolder + VfsControllerBase.UriSegmentSeparator),
+                    Href = baseAddress + Uri.EscapeUriString(SystemDriveFolder + VfsControllerBase.UriSegmentSeparator) + query,
                     Path = dir.FullName
                 };
             }
@@ -82,20 +83,21 @@ namespace Kudu.Services.Infrastructure
                 {
                     Name = LocalSiteRootFolder,
                     MTime = dir.LastWriteTimeUtc,
+                    CRTime = dir.CreationTimeUtc,
                     Mime = "inode/shortcut",
-                    Href = baseAddress + Uri.EscapeUriString(LocalSiteRootFolder + VfsControllerBase.UriSegmentSeparator),
+                    Href = baseAddress + Uri.EscapeUriString(LocalSiteRootFolder + VfsControllerBase.UriSegmentSeparator) + query,
                     Path = dir.FullName
                 };
             }
         }
 
-        public static bool TryHandleRequest(HttpRequestMessage request, string path, out HttpResponseMessage response)
+        public static bool TryHandleRequest(HttpRequestMessage request, string path, bool useOriginalHost, out HttpResponseMessage response)
         {
             response = null;
             if (String.Equals(path, SystemDrivePath, StringComparison.OrdinalIgnoreCase))
             {
                 response = request.CreateResponse(HttpStatusCode.TemporaryRedirect);
-                UriBuilder location = new UriBuilder(request.RequestUri);
+                UriBuilder location = new UriBuilder(request.GetRequestUri(useOriginalHost));
                 location.Path += "/";
                 response.Headers.Location = location.Uri;
             }

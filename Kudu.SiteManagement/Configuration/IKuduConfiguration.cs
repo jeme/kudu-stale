@@ -10,6 +10,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Web;
 using Kudu.SiteManagement.Configuration.Section;
+using Kudu.Client.Infrastructure;
 
 namespace Kudu.SiteManagement.Configuration
 {
@@ -18,7 +19,9 @@ namespace Kudu.SiteManagement.Configuration
         string RootPath { get; }
         string ApplicationsPath { get; }
         string ServiceSitePath { get; }
+        string IISConfigurationFile { get; }
         bool CustomHostNamesEnabled { get; }
+        BasicAuthCredentialProvider BasicAuthCredential { get; }
 
         IEnumerable<IBindingConfiguration> Bindings { get; }
         IEnumerable<ICertificateStoreConfiguration> CertificateStores { get; }
@@ -41,12 +44,14 @@ namespace Kudu.SiteManagement.Configuration
             get
             {
                 if (_section != null)
+                {
                     return _section.CustomHostNamesEnabled;
+                }
 
                 bool value;
                 bool.TryParse(_appSettings["enableCustomHostNames"], out value);
                 //NOTE: try parse will default the bool to false if it fails.
-                //      this will catch cases as null and invalid with the intented behavior.
+                //      this will catch cases as null and invalid with the intended behavior.
                 return value;
             }
         }
@@ -61,7 +66,7 @@ namespace Kudu.SiteManagement.Configuration
                 //                   @default = Environment.ExpandEnvironmentVariables(@default);
                 //      if(Directory.Exists(@default)) return @default;
                 //
-                //  - Do we wan't to do that, basically ignoring configuration?...
+                //  - Do we want to do that, basically ignoring configuration?...
 
                 return _section == null
                     ? PathRelativeToRoot(_appSettings["serviceSitePath"])
@@ -79,14 +84,33 @@ namespace Kudu.SiteManagement.Configuration
             }
         }
 
+        private const string DefaultIisConfigurationFile = "%windir%\\system32\\inetsrv\\config\\applicationHost.config";
+
+        public string IISConfigurationFile
+        {
+            get
+            {
+                if (_section == null || _section.IisConfigurationFile == null)
+                {
+                    return Environment.ExpandEnvironmentVariables(DefaultIisConfigurationFile);
+                }
+
+                return string.IsNullOrEmpty(_section.IisConfigurationFile.Path)
+                    ? Environment.ExpandEnvironmentVariables(DefaultIisConfigurationFile)
+                    : _section.IisConfigurationFile.Path;
+            }
+        }
+
         public IEnumerable<IBindingConfiguration> Bindings
         {
             get
             {
                 if (_section == null || _section.Bindings == null)
+                {
                     return Enumerable.Empty<IBindingConfiguration>()
                         .Union(LegacyBinding("urlBaseValue", SiteType.Live))
                         .Union(LegacyBinding("serviceUrlBaseValue", SiteType.Service));
+                }
 
                 return _section.Bindings.Items.Select(binding => new BindingConfiguration(binding));
             }
@@ -97,11 +121,28 @@ namespace Kudu.SiteManagement.Configuration
             get
             {
                 if (_section == null || _section.CertificateStores == null || !_section.CertificateStores.Items.Any())
-                    return new[] { new CertificateStoreConfiguration(StoreName.My) };                
+                {
+                    return new[] { new CertificateStoreConfiguration(StoreName.My) };
+                }
 
                 return _section.CertificateStores.Items.Select(store => new CertificateStoreConfiguration(store));
             }
         }
+
+        public BasicAuthCredentialProvider BasicAuthCredential
+        {
+            get
+            {
+                if ( _section == null ||
+                    _section.BasicAuthCredential == null ||
+                    string.IsNullOrEmpty( _section.BasicAuthCredential.Username ) ||
+                    string.IsNullOrEmpty( _section.BasicAuthCredential.Password ) ) {
+                    return new BasicAuthCredentialProvider( "admin" , "kudu" );
+                }
+                return new BasicAuthCredentialProvider( _section.BasicAuthCredential.Username , _section.BasicAuthCredential.Password );
+            }
+        }
+
 
         private KuduConfiguration(string root, KuduConfigurationSection section, NameValueCollection appSettings)
         {
@@ -120,8 +161,12 @@ namespace Kudu.SiteManagement.Configuration
         {
             string legacyBinding = _appSettings[key];
             if (string.IsNullOrEmpty(legacyBinding))
+            {
                 yield break;
+            }
             yield return new BindingConfiguration(legacyBinding, UriScheme.Http, type, null);
         }
+
+
     }
 }

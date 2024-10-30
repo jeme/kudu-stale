@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Abstractions;
 using System.IO.Compression;
@@ -15,7 +16,18 @@ namespace Kudu.Core.Infrastructure
             zipArchive.AddDirectory(directoryInfo, tracer, directoryNameInArchive);
         }
 
+        public static void AddDirectory(this ZipArchive zipArchive, DirectoryInfoBase directory, ITracer tracer, string directoryNameInArchive, out IList<ZipArchiveEntry> files)
+        {
+            files = new List<ZipArchiveEntry>();
+            InternalAddDirectory(zipArchive, directory, tracer, directoryNameInArchive, files);
+        }
+
         public static void AddDirectory(this ZipArchive zipArchive, DirectoryInfoBase directory, ITracer tracer, string directoryNameInArchive)
+        {
+            InternalAddDirectory(zipArchive, directory, tracer, directoryNameInArchive);
+        }
+
+        private static void InternalAddDirectory(ZipArchive zipArchive, DirectoryInfoBase directory, ITracer tracer, string directoryNameInArchive, IList<ZipArchiveEntry> files = null)
         {
             bool any = false;
             foreach (var info in directory.GetFileSystemInfos())
@@ -25,11 +37,12 @@ namespace Kudu.Core.Infrastructure
                 if (subDirectoryInfo != null)
                 {
                     string childName = ForwardSlashCombine(directoryNameInArchive, subDirectoryInfo.Name);
-                    zipArchive.AddDirectory(subDirectoryInfo, tracer, childName);
+                    InternalAddDirectory(zipArchive, subDirectoryInfo, tracer, childName, files);
                 }
                 else
                 {
-                    zipArchive.AddFile((FileInfoBase)info, tracer, directoryNameInArchive);
+                    var entry = zipArchive.AddFile((FileInfoBase)info, tracer, directoryNameInArchive);
+                    files?.Add(entry);
                 }
             }
 
@@ -45,13 +58,13 @@ namespace Kudu.Core.Infrastructure
             return Path.Combine(part1, part2).Replace('\\', '/');
         }
 
-        public static void AddFile(this ZipArchive zipArchive, string filePath, ITracer tracer, string directoryNameInArchive = "")
+        public static ZipArchiveEntry AddFile(this ZipArchive zipArchive, string filePath, ITracer tracer, string directoryNameInArchive = "")
         {
             var fileInfo = new FileInfoWrapper(new FileInfo(filePath));
-            zipArchive.AddFile(fileInfo, tracer, directoryNameInArchive);
+            return zipArchive.AddFile(fileInfo, tracer, directoryNameInArchive);
         }
 
-        public static void AddFile(this ZipArchive zipArchive, FileInfoBase file, ITracer tracer, string directoryNameInArchive)
+        public static ZipArchiveEntry AddFile(this ZipArchive zipArchive, FileInfoBase file, ITracer tracer, string directoryNameInArchive)
         {
             Stream fileStream = null;
             try
@@ -63,7 +76,7 @@ namespace Kudu.Core.Infrastructure
                 // tolerate if file in use.
                 // for simplicity, any exception.
                 tracer.TraceError(String.Format("{0}, {1}", file.FullName, ex));
-                return;
+                return null;
             }
 
             try
@@ -76,6 +89,7 @@ namespace Kudu.Core.Infrastructure
                 {
                     fileStream.CopyTo(zipStream);
                 }
+                return entry;
             }
             finally
             {
@@ -83,38 +97,78 @@ namespace Kudu.Core.Infrastructure
             }
         }
 
-        public static void AddFile(this ZipArchive zip, string fileName, string fileContent)
+        public static ZipArchiveEntry AddFile(this ZipArchive zip, string fileName, string fileContent)
         {
             ZipArchiveEntry entry = zip.CreateEntry(fileName, CompressionLevel.Fastest);
             using (var writer = new StreamWriter(entry.Open()))
             {
                 writer.Write(fileContent);
             }
+            return entry;
         }
 
-        public static void Extract(this ZipArchive archive, string directoryName)
+        public static void Extract(this ZipArchive archive, string directoryName, ITracer tracer, bool doNotPreserveFileTime = false)
         {
-            foreach (ZipArchiveEntry entry in archive.Entries)
-            {
-                string path = Path.Combine(directoryName, entry.FullName);
-                if (entry.Length == 0 && (path.EndsWith("/", StringComparison.Ordinal) || path.EndsWith("\\", StringComparison.Ordinal)))
-                {
-                    // Extract directory
-                    FileSystemHelpers.CreateDirectory(path);
-                }
-                else
-                {
-                    FileInfoBase fileInfo = FileSystemHelpers.FileInfoFromFileName(path);
+            const int MaxExtractTraces = 5;
 
-                    if (!fileInfo.Directory.Exists)
+            var entries = archive.Entries;
+            var total = entries.Count;
+            var traces = 0;
+            using (tracer.Step(string.Format("Extracting {0} entries to {1} directory", entries.Count, directoryName)))
+            {
+                foreach (ZipArchiveEntry entry in entries)
+                {
+                    string path = Path.Combine(directoryName, entry.FullName);
+
+                    if (!Path.GetFullPath(path).StartsWith(Path.GetFullPath(directoryName), StringComparison.InvariantCultureIgnoreCase))
                     {
-                        fileInfo.Directory.Create();
+                        var sanitizedFileName = entry.FullName?.Replace("../", "./");
+                        path = Path.Combine(directoryName, sanitizedFileName);
                     }
 
-                    using (Stream zipStream = entry.Open(),
-                                  fileStream = fileInfo.Open(FileMode.Create, FileAccess.Write))
+                    if (entry.Length == 0 && (path.EndsWith("/", StringComparison.Ordinal) || path.EndsWith("\\", StringComparison.Ordinal)))
                     {
-                        zipStream.CopyTo(fileStream);
+                        // Extract directory
+                        FileSystemHelpers.CreateDirectory(path);
+                    }
+                    else
+                    {
+                        FileInfoBase fileInfo = FileSystemHelpers.FileInfoFromFileName(path);
+
+                        string message = null;
+                        // tracing first/last N files
+                        if (traces < MaxExtractTraces || traces >= total - MaxExtractTraces)
+                        {
+                            message = string.Format("Extracting to {0} ...", fileInfo.FullName);
+                        }
+                        else if (traces == MaxExtractTraces)
+                        {
+                            message = "Omitting extracting file traces ...";
+                        }
+
+                        ++traces;
+
+                        using (!string.IsNullOrEmpty(message) ? tracer.Step(message) : null)
+                        {
+                            if (!fileInfo.Directory.Exists)
+                            {
+                                fileInfo.Directory.Create();
+                            }
+
+                            using (Stream zipStream = entry.Open(),
+                                          fileStream = fileInfo.Open(FileMode.Create, FileAccess.Write))
+                            {
+                                zipStream.CopyTo(fileStream);
+                            }
+
+                            // this is to allow, the file time to always be newer than destination
+                            // the outcome is always replacing the destination files.
+                            // it is non-optimized but workaround NPM reset file time issue (https://github.com/projectkudu/kudu/issues/2917).
+                            if (!doNotPreserveFileTime)
+                            {
+                                fileInfo.LastWriteTimeUtc = entry.LastWriteTime.ToUniversalTime().DateTime;
+                            }
+                        }
                     }
                 }
             }

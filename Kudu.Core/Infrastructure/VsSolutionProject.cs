@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Kudu.Core.Deployment;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -17,7 +18,6 @@ namespace Kudu.Core.Infrastructure
         private static readonly PropertyInfo _projectNameProperty;
         private static readonly PropertyInfo _relativePathProperty;
         private static readonly PropertyInfo _projectTypeProperty;
-        private static readonly PropertyInfo _projectExtensionProperty;
         private static readonly PropertyInfo _aspNetConfigurationsProperty;
 
         static VsSolutionProject()
@@ -29,7 +29,6 @@ namespace Kudu.Core.Infrastructure
                 _projectNameProperty = ReflectionUtility.GetInternalProperty(_projectInSolutionType, "ProjectName");
                 _relativePathProperty = ReflectionUtility.GetInternalProperty(_projectInSolutionType, "RelativePath");
                 _projectTypeProperty = ReflectionUtility.GetInternalProperty(_projectInSolutionType, "ProjectType");
-                _projectExtensionProperty = ReflectionUtility.GetInternalProperty(_projectInSolutionType, "Extension");
                 _aspNetConfigurationsProperty = ReflectionUtility.GetInternalProperty(_projectInSolutionType, "AspNetConfigurations");
             }
         }
@@ -40,10 +39,12 @@ namespace Kudu.Core.Infrastructure
         private bool _isWap;
         private bool _isWebSite;
         private bool _isExecutable;
-        private bool _isAspNet5;
+        private bool _isAspNetCore;
+        private bool _isFunctionApp;
         private IEnumerable<Guid> _projectTypeGuids;
         private string _projectName;
         private string _absolutePath;
+        private string _targetFramework;
 
         private bool _initialized;
 
@@ -101,12 +102,21 @@ namespace Kudu.Core.Infrastructure
             }
         }
 
-        public bool IsAspNet5
+        public bool IsAspNetCore
         {
             get
             {
                 EnsureProperties();
-                return _isAspNet5;
+                return _isAspNetCore;
+            }
+        }
+
+        public bool IsFunctionApp
+        {
+            get
+            {
+                EnsureProperties();
+                return _isFunctionApp;
             }
         }
 
@@ -125,7 +135,6 @@ namespace Kudu.Core.Infrastructure
 
             _projectName = _projectNameProperty.GetValue<string>(_projectInstance);
             var projectType = _projectTypeProperty.GetValue<SolutionProjectType>(_projectInstance);
-            var projectExtension = _projectExtensionProperty.GetValue<string>(_projectInstance);
             var relativePath = _relativePathProperty.GetValue<string>(_projectInstance);
             _isWebSite = projectType == SolutionProjectType.WebProject;
 
@@ -138,7 +147,7 @@ namespace Kudu.Core.Infrastructure
             {
                 var aspNetConfigurations = _aspNetConfigurationsProperty.GetValue<Hashtable>(_projectInstance);
 
-                // Use the release configuraiton and debug if it isn't available
+                // Use the release configuration and debug if it isn't available
                 object configurationObject = aspNetConfigurations["Release"] ?? aspNetConfigurations["Debug"];
 
                 // REVIEW: Is there always a configuration object (i.e. can this ever be null?)
@@ -150,26 +159,16 @@ namespace Kudu.Core.Infrastructure
             }
 
             _absolutePath = Path.Combine(Path.GetDirectoryName(_solutionPath), relativePath);
-
-            if (projectType == SolutionProjectType.KnownToBeMSBuildFormat && File.Exists(_absolutePath))
+            if (FileSystemHelpers.FileExists(_absolutePath) && DeploymentHelper.IsMsBuildProject(_absolutePath))
             {
-                // If the project is an msbuild project then extra the project type guids
+                // used to determine project type from project file
                 _projectTypeGuids = VsHelper.GetProjectTypeGuids(_absolutePath);
 
-                // Check if it's a wap
+                _isAspNetCore = AspNetCoreHelper.IsDotnetCoreFromProjectFile(_absolutePath, _projectTypeGuids);
                 _isWap = VsHelper.IsWap(_projectTypeGuids);
-
                 _isExecutable = VsHelper.IsExecutableProject(_absolutePath);
-            }
-            else if (projectExtension.Equals(".kproj", StringComparison.OrdinalIgnoreCase) && File.Exists(_absolutePath))
-            {
-                var projectPath = Path.Combine(Path.GetDirectoryName(_absolutePath), "project.json");
-                if (AspNet5Helper.IsWebApplicationProjectJsonFile(projectPath))
-                {
-                    _isAspNet5 = true;
-                    _absolutePath = projectPath;
-                }
-                _projectTypeGuids = Enumerable.Empty<Guid>();
+                _isFunctionApp = FunctionAppHelper.LooksLikeFunctionApp();
+                _targetFramework = VsHelper.GetTargetFramework(_absolutePath);
             }
             else
             {
@@ -179,11 +178,21 @@ namespace Kudu.Core.Infrastructure
             _initialized = true;
         }
 
+        public string TargetFramework
+        {
+            get
+            {
+                EnsureProperties();
+                return _targetFramework;
+            }
+        }
+
+
         // Microsoft.Build.Construction.SolutionProjectType
         private enum SolutionProjectType
         {
             Unknown,
-            KnownToBeMSBuildFormat,
+            KnownToBeMSBuildFormat,  // KnownToBeMSBuildFormat: C#, VB, and VJ# projects
             SolutionFolder,
             WebProject,
             WebDeploymentProject,

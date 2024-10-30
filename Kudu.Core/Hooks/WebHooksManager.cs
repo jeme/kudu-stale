@@ -48,6 +48,24 @@ namespace Kudu.Core.Hooks
             _hooksFilePath = Path.Combine(_environment.DeploymentsPath, HooksFileName);
         }
 
+        public bool ShouldSkipWebHooks
+        {
+            get
+            {
+                try
+                {
+                    // this is optimization to skip WebHook logic if no webhook file
+                    // majority of sites have no hook
+                    return !FileSystemHelpers.FileExists(_hooksFilePath);
+                }
+                catch
+                {
+                    // any error - proceed with webhook logic optimistically
+                    return false;
+                }
+            }
+        }
+
         public IEnumerable<WebHook> WebHooks
         {
             get
@@ -56,12 +74,10 @@ namespace Kudu.Core.Hooks
                 {
                     IEnumerable<WebHook> webHooks = null;
 
-                    bool lockAcquired = _hooksLock.TryLockOperation(() =>
+                    _hooksLock.LockOperation(() =>
                     {
                         webHooks = ReadWebHooksFromFile();
-                    }, LockTimeout);
-
-                    VerifyLockAcquired(lockAcquired);
+                    }, "Getting WebHooks", LockTimeout);
 
                     return webHooks;
                 }
@@ -72,14 +88,15 @@ namespace Kudu.Core.Hooks
         {
             using (_tracer.Step("WebHooksManager.AddWebHook"))
             {
-                if (!Uri.IsWellFormedUriString(webHook.HookAddress, UriKind.RelativeOrAbsolute))
+                // must be valid absolute uri.
+                if (!Uri.IsWellFormedUriString(webHook.HookAddress, UriKind.Absolute))
                 {
                     throw new FormatException(Resources.Error_InvalidHookAddress.FormatCurrentCulture(webHook.HookAddress));
                 }
 
                 WebHook createdWebHook = null;
 
-                bool lockAcquired = _hooksLock.TryLockOperation(() =>
+                _hooksLock.LockOperation(() =>
                 {
                     var webHooks = new List<WebHook>(ReadWebHooksFromFile());
                     WebHook existingWebHook = webHooks.FirstOrDefault(h => String.Equals(h.HookAddress, webHook.HookAddress, StringComparison.OrdinalIgnoreCase));
@@ -103,9 +120,7 @@ namespace Kudu.Core.Hooks
                         // if web hook exists but with a different hook event type then throw a conflict exception
                         throw new ConflictException();
                     }
-                }, LockTimeout);
-
-                VerifyLockAcquired(lockAcquired);
+                }, "Adding WebHook", LockTimeout);
 
                 return createdWebHook;
             }
@@ -115,12 +130,10 @@ namespace Kudu.Core.Hooks
         {
             using (_tracer.Step("WebHooksManager.RemoveWebHook"))
             {
-                bool lockAcquired = _hooksLock.TryLockOperation(() =>
+                _hooksLock.LockOperation(() =>
                 {
                     RemoveWebHookNotUnderLock(hookId);
-                }, LockTimeout);
-
-                VerifyLockAcquired(lockAcquired);
+                }, "Deleting WebHook", LockTimeout);
             }
         }
 
@@ -134,36 +147,26 @@ namespace Kudu.Core.Hooks
 
         public async Task PublishEventAsync(string hookEventType, object eventContent)
         {
+            if (ShouldSkipWebHooks)
+            {
+                return;
+            }
+
             using (_tracer.Step("WebHooksManager.PublishEventAsync: " + hookEventType))
             {
                 string jsonString = JsonConvert.SerializeObject(eventContent, JsonSerializerSettings);
 
-                bool lockAcquired = await _hooksLock.TryLockOperationAsync(async () =>
+                await _hooksLock.LockOperationAsync(async () =>
                 {
                     await PublishToHooksAsync(jsonString, hookEventType);
-                }, LockTimeout);
-
-                VerifyLockAcquired(lockAcquired);
+                }, "Publishing WebHook event", LockTimeout);
             }
-        }
-
-        private IEnumerable<WebHook> GetWebHooks(string hookEventType)
-        {
-            return ReadWebHooksFromFile().Where(h => String.Equals(h.HookEventType, hookEventType, StringComparison.OrdinalIgnoreCase));
         }
 
         private void RemoveWebHookNotUnderLock(string hookId)
         {
             IEnumerable<WebHook> hooks = ReadWebHooksFromFile();
             SaveHooksToFile(hooks.Where(h => !String.Equals(h.Id, hookId, StringComparison.OrdinalIgnoreCase)));
-        }
-
-        private static void VerifyLockAcquired(bool lockAcquired)
-        {
-            if (!lockAcquired)
-            {
-                throw new LockOperationException("Failed to acquire lock");
-            }
         }
 
         private async Task PublishToHookAsync(WebHook webHook, string jsonString)
@@ -233,16 +236,20 @@ namespace Kudu.Core.Hooks
 
         private async Task PublishToHooksAsync(string jsonString, string hookType)
         {
-            IEnumerable<WebHook> webHooks = GetWebHooks(hookType);
+            IEnumerable<WebHook> webHooks = ReadWebHooksFromFile();
 
             if (webHooks.Any())
             {
                 var publishTasks = new List<Task>();
 
-                foreach (var webHook in webHooks)
+                foreach (var webHook in webHooks.Where(h => String.Equals(h.HookEventType, hookType, StringComparison.OrdinalIgnoreCase)))
                 {
-                    Task publishTask = PublishToHookAsync(webHook, jsonString);
-                    publishTasks.Add(publishTask);
+                    // this is to address the bug where we used to relax and allow relative path
+                    if (Uri.IsWellFormedUriString(webHook.HookAddress, UriKind.Absolute))
+                    {
+                        Task publishTask = PublishToHookAsync(webHook, jsonString);
+                        publishTasks.Add(publishTask);
+                    }
                 }
 
                 await Task.WhenAll(publishTasks);
@@ -266,7 +273,8 @@ namespace Kudu.Core.Hooks
             {
                 try
                 {
-                    return JsonConvert.DeserializeObject<IEnumerable<WebHook>>(fileContent, JsonSerializerSettings);
+                    // It is possible for Deserialize to not throw and return null.
+                    return JsonConvert.DeserializeObject<IEnumerable<WebHook>>(fileContent, JsonSerializerSettings) ?? Enumerable.Empty<WebHook>();
                 }
                 catch (JsonSerializationException ex)
                 {

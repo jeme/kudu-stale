@@ -7,12 +7,12 @@ using Kudu.Core.SourceControl;
 using Kudu.Core.Test;
 using Kudu.Core.Tracing;
 using Kudu.TestHarness;
+using Kudu.TestHarness.Xunit;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.FunctionalTests
 {
-    [TestHarnessClassCommand]
+    [KuduXunitTestClass]
     public class HgRepositoryFacts
     {
         [Fact]
@@ -32,7 +32,9 @@ namespace Kudu.FunctionalTests
             }
         }
 
-        [Fact]
+        // bitbucket.org no longer support mercurial
+        // https://bitbucket.org/blog/sunsetting-mercurial-support-in-bitbucket
+        // [Fact]
         public void HgExecutableClonesRepository()
         {
             const string expectedId = "e2ff43634d31a70383142a4b3940baff8b6386ee";
@@ -55,7 +57,9 @@ namespace Kudu.FunctionalTests
             }
         }
 
-        [Fact]
+        // bitbucket.org no longer support mercurial
+        // https://bitbucket.org/blog/sunsetting-mercurial-support-in-bitbucket
+        // [Fact]
         public void HgRepositoryCanFetchBranchFromRemoteRepository()
         {
             const string repositoryName = "fetchTest";
@@ -79,11 +83,11 @@ namespace Kudu.FunctionalTests
                 File.WriteAllText(helloTextPath, "uncommitted changes");
 
                 // Act - 2
-                hgRepo.FetchWithoutConflict(remoteRepository, branchName: "test");
+                hgRepo.FetchWithoutConflict(remoteRepository, branchName: "branch with spaces");
 
                 // Assert - 2
                 Assert.Equal("This is a commit from test", File.ReadAllText(helloTextPath));
-                Assert.Equal("7648ca7e03987b5d4204fcb283c687dada051ce5", hgRepo.CurrentId);
+                Assert.Equal("693ae9285871f20f2b9c347727ca82b39c3fe5e8", hgRepo.CurrentId);
             }
         }
 
@@ -114,7 +118,9 @@ namespace Kudu.FunctionalTests
             }
         }
 
-        [Fact]
+        // bitbucket.org no longer support mercurial
+        // https://bitbucket.org/blog/sunsetting-mercurial-support-in-bitbucket
+        // [Fact]
         public void FetchWithoutConflictOnEmptyRepoReturnsFalse()
         {
             using (TestRepository testRepository = GetRepository())
@@ -128,7 +134,9 @@ namespace Kudu.FunctionalTests
             }
         }
 
-        [Fact]
+        // bitbucket.org no longer support mercurial
+        // https://bitbucket.org/blog/sunsetting-mercurial-support-in-bitbucket
+        // [Fact]
         public void FetchWithoutConflictMessageMatchesEmbeddedErrorString()
         {
             // This test verifies if the embedded string matches the exception message mercurial throws.

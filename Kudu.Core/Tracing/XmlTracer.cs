@@ -24,6 +24,8 @@ namespace Kudu.Core.Tracing
         public const int MaxXmlFiles = 200;
         public const int CleanUpIntervalSecs = 10;
 
+        private static object _cleanupLock = new object();
+        private static bool _cleanupPending = false;
         private const string PendingXml = "_pending.xml";
         private static long _salt = 0;
         private static DateTime _lastCleanup = DateTime.MinValue;
@@ -33,9 +35,12 @@ namespace Kudu.Core.Tracing
         {
             // portal polling
             "/api/webjobs",
+            "/api/continuousjobs",
+            "/api/triggeredjobs",
             "/api/siteextensions",
             "/api/processes",
             "/api/deployments",
+            "/api/deployments/latest",
         };
 
         private Stack<TraceInfo> _infos;
@@ -81,9 +86,10 @@ namespace Kudu.Core.Tracing
             {
                 var info = new TraceInfo(title, attribs);
 
+                var ensureMaxXmlFiles = false;
                 if (String.IsNullOrEmpty(_file))
                 {
-                    EnsureMaxXmlFiles();
+                    ensureMaxXmlFiles = true;
 
                     // generate trace file name base on attribs
                     _file = GenerateFileName(info);
@@ -98,7 +104,7 @@ namespace Kudu.Core.Tracing
 
                 strb.Append(new String(' ', _infos.Count * 2));
                 strb.AppendFormat("<step title=\"{0}\" ", XmlUtility.EscapeXmlText(title));
-                strb.AppendFormat("date=\"{0}\" ", DateTime.UtcNow.ToString("yyy-MM-ddTHH:mm:ss.fff"));
+                strb.AppendFormat("date=\"{0}\" ", info.StartTime.ToString("yyyy-MM-ddTHH:mm:ss.fff"));
                 if (_infos.Count == 0)
                 {
                     strb.AppendFormat("instance=\"{0}\" ", InstanceIdUtility.GetShortInstanceId());
@@ -117,6 +123,11 @@ namespace Kudu.Core.Tracing
                 FileSystemHelpers.AppendAllTextToFile(_file, strb.ToString());
                 _infos.Push(info);
                 _isStartElement = true;
+
+                if (ensureMaxXmlFiles)
+                {
+                    EnsureMaxXmlFiles();
+                }
 
                 return new DisposableAction(() => WriteEndTrace());
             }
@@ -225,7 +236,7 @@ namespace Kudu.Core.Tracing
             }
 
             // non OK
-            if (statusCode != 200)
+            if (statusCode < 200 || statusCode > 299)
             {
                 return true;
             }
@@ -238,30 +249,61 @@ namespace Kudu.Core.Tracing
 
         private void EnsureMaxXmlFiles()
         {
-            var now = DateTime.UtcNow;
-            if (_lastCleanup.AddSeconds(CleanUpIntervalSecs) > now)
+            // _lastCleanup ensures we only check (iterate) the log directory every certain period.
+            // _cleanupPending ensures there is one cleanup thread at a time.
+            lock (_cleanupLock)
             {
-                return;
-            }
-
-            _lastCleanup = now;
-
-            try
-            {
-                var files = FileSystemHelpers.GetFiles(_path, "*.xml");
-                if (files.Length < MaxXmlFiles)
+                if (_cleanupPending)
                 {
                     return;
                 }
 
-                foreach (var file in files.OrderBy(n => n).Take(files.Length - (MaxXmlFiles * 80) / 100))
+                var now = DateTime.UtcNow;
+                if (_lastCleanup.AddSeconds(CleanUpIntervalSecs) > now)
                 {
-                    FileSystemHelpers.DeleteFileSafe(file);
+                    return;
+                }
+
+                _lastCleanup = now;
+                _cleanupPending = true;
+            }
+
+            try
+            {
+                ITracer tracer = this;
+                using (tracer.Step("Cleanup Xml Logs"))
+                {
+                    try
+                    {
+                        var files = FileSystemHelpers.GetFiles(_path, "*.xml");
+                        if (files.Length < MaxXmlFiles)
+                        {
+                            return;
+                        }
+
+                        var toCleanup = files.Length - (MaxXmlFiles * 80) / 100;
+                        var attribs = new Dictionary<string, string>
+                        {
+                            { "totalFiles", files.Length.ToString() },
+                            { "totalCleanup", toCleanup.ToString() }
+                        };
+                        using (tracer.Step("Cleanup Infos", attribs))
+                        {
+                            foreach (var file in files.OrderBy(n => n).Take(toCleanup))
+                            {
+                                FileSystemHelpers.DeleteFileSafe(file);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        tracer.TraceError(ex);
+                    }
                 }
             }
-            catch
+            finally
             {
-                // no-op
+                _cleanupPending = false;
             }
         }
 
@@ -274,19 +316,19 @@ namespace Kudu.Core.Tracing
             // add salt to avoid collision
             // mathematically improbable for salt to overflow 
             strb.AppendFormat("{0}_{1}_{2:000}",
-                DateTime.UtcNow.ToString("yyyy-MM-ddTHH-mm-ss"),
+                info.StartTime.ToString("yyyy-MM-ddTHH-mm-ss"),
                 InstanceIdUtility.GetShortInstanceId(),
                 Interlocked.Increment(ref _salt) % 1000);
 
             if (info.Title == XmlTracer.IncomingRequestTrace)
             {
                 var path = info.Attributes["url"].Split('?')[0].Trim('/');
-                strb.AppendFormat("_{0}_{1}", info.Attributes["method"], path.Replace('/', '-'));
+                strb.AppendFormat("_{0}_{1}", info.Attributes["method"], path.ToSafeFileName());
             }
             else if (info.Title == XmlTracer.StartupRequestTrace)
             {
                 var path = info.Attributes["url"].Split('?')[0].Trim('/');
-                strb.AppendFormat("_Startup_{0}_{1}", info.Attributes["method"], path.Replace('/', '-'));
+                strb.AppendFormat("_Startup_{0}_{1}", info.Attributes["method"], path.ToSafeFileName());
             }
             else if (info.Title == XmlTracer.ProcessShutdownTrace)
             {
@@ -300,11 +342,11 @@ namespace Kudu.Core.Tracing
             else if (string.Equals(XmlTracer.BackgroundTrace, info.Title, StringComparison.Ordinal))
             {
                 var path = info.Attributes["url"].Split('?')[0].Trim('/');
-                strb.AppendFormat("_Background_{0}_{1}", info.Attributes["method"], path.Replace('/', '-'));
+                strb.AppendFormat("_Background_{0}_{1}", info.Attributes["method"], path.ToSafeFileName());
             }
             else if (!String.IsNullOrEmpty(info.Title))
             {
-                strb.AppendFormat("_{0}", info.Title.Replace(' ', '-'));
+                strb.AppendFormat("_{0}", info.Title.ToSafeFileName());
             }
 
             strb.Append(PendingXml);

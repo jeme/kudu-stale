@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <root>
   <!-- 
     Microsoft ResX Schema 
@@ -144,9 +144,6 @@
   <data name="ByteRangeStreamReadOnly" xml:space="preserve">
     <value>This is a read-only stream.</value>
   </data>
-  <data name="Error_DeploymentInProgess" xml:space="preserve">
-    <value>There's a deployment already in progress.</value>
-  </data>
   <data name="Error_DeploymentNotFound" xml:space="preserve">
     <value>Deployment '{0}' not found.</value>
   </data>
@@ -161,12 +158,6 @@
   </data>
   <data name="Error_UnsupportedFormat" xml:space="preserve">
     <value>The json payload is unsupported.</value>
-  </data>
-  <data name="FetchingChanges" xml:space="preserve">
-    <value>Fetching changes.</value>
-  </data>
-  <data name="ReceivingChanges" xml:space="preserve">
-    <value>Receiving changes.</value>
   </data>
   <data name="SettingDoesNotExist" xml:space="preserve">
     <value>The setting '{0}' does not exist.</value>
@@ -202,7 +193,7 @@
     <value>Repository could not be found.</value>
   </data>
   <data name="LogStream_AppShutdown" xml:space="preserve">
-    <value>{0}{1}  The application was terminated.{0}</value>
+    <value>{0}{1}  The log-streaming session has ended. Please reconnect to continue streaming logs.{0}</value>
   </data>
   <data name="LogStream_Error" xml:space="preserve">
     <value>{0}{1}  Error has occurred and stream is terminated. {2}{0}</value>
@@ -211,10 +202,10 @@
     <value>{0}  No new trace in the past {1} min(s).{2}</value>
   </data>
   <data name="LogStream_Timeout" xml:space="preserve">
-    <value>{0}  Stream terminated due to timeout {1} min(s).{2}</value>
+    <value>{0}  The log-streaming session has ended due to timeout {1} min(s).{2}</value>
   </data>
   <data name="LogStream_Welcome" xml:space="preserve">
-    <value>{0}  Welcome, you are now connected to log-streaming service.{1}</value>
+    <value>{0}  Welcome, you are now connected to log-streaming service. The default timeout is 2 hours. Change the timeout with the App Setting SCM_LOGSTREAM_TIMEOUT (in seconds). {1}</value>
   </data>
   <data name="Error_InvalidRepoUrl" xml:space="preserve">
     <value>Repository url '{0}' is invalid.</value>
@@ -246,6 +237,21 @@
   <data name="Dropbox_Committing" xml:space="preserve">
     <value>Committing {0} change(s) from Dropbox.</value>
   </data>
+  <data name="OneDrive_SynchronizingProgressWithFailure" xml:space="preserve">
+    <value>Synchronizing {0}% of {1} change(s) from OneDrive with {2} failure(s).</value>
+  </data>
+  <data name="OneDrive_SynchronizingProgress" xml:space="preserve">
+    <value>Synchronizing {0}% of {1} change(s) from OneDrive.</value>
+  </data>
+  <data name="OneDrive_Synchronizing" xml:space="preserve">
+    <value>Synchronizing changes from OneDrive.</value>
+  </data>
+  <data name="OneDrive_SynchronizedWithFailure" xml:space="preserve">
+    <value>Synchronized {0} of {1} change(s) from OneDrive with {2} failure(s).</value>
+  </data>
+  <data name="OneDrive_Synchronized" xml:space="preserve">
+    <value>Synchronized {0} change(s) from OneDrive.</value>
+  </data>
   <data name="VfsScmController_DeploymentError" xml:space="preserve">
     <value>Deployment failed with status: '{0}'. Please retry operation.</value>
   </data>
@@ -272,5 +278,41 @@
   </data>
   <data name="Error_AutoSwapDeploymentOngoing" xml:space="preserve">
     <value>There is an auto swap deployment currently ongoing please try again when it completes.</value>
+  </data>
+  <data name="OneDriveInvalidRequestUri" xml:space="preserve">
+    <value>Invalid request uri '{0}'</value>
+  </data>
+  <data name="OneDriveUnableToSync" xml:space="preserve">
+    <value>Unable to sync OneDrive, @changes.resync is {0}</value>
+  </data>
+  <data name="OneDriveApplyingChanges" xml:space="preserve">
+    <value>Applying {0} changes ...</value>
+  </data>
+  <data name="OneDriveApplyResult" xml:space="preserve">
+    <value>{0} succeeded, {1} failed.</value>
+  </data>
+  <data name="OneDriveDeletedDirectory" xml:space="preserve">
+    <value>Deleted directory {0} ...</value>
+  </data>
+  <data name="OneDriveDeletedFile" xml:space="preserve">
+    <value>Deleted file {0} ...</value>
+  </data>
+  <data name="OneDriveNoChangesFound" xml:space="preserve">
+    <value>No changes found.</value>
+  </data>
+  <data name="Vso_Synchronizing" xml:space="preserve">
+    <value>Synchronizing changes from VSTS ...</value>
+  </data>
+  <data name="Error_LogDetailsNotFound" xml:space="preserve">
+    <value>LogId '{0}' was not found in Deployment '{1}'.</value>
+  </data>
+  <data name="ReceivingChanges" xml:space="preserve">
+    <value>Receiving changes.</value>
+  </data>
+  <data name="Error_DeploymentInProgress" xml:space="preserve">
+    <value>There is a deployment currently in progress. Please try again when it completes.</value>
+  </data>
+  <data name="Error_RunFromRemoteZipConfigured" xml:space="preserve">
+    <value>Run-From-Zip is set to a remote URL using WEBSITE_USE_ZIP app setting. Deployment is not supported in this configuration.</value>
   </data>
 </root>

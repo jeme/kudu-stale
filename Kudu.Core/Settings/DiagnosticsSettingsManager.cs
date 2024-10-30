@@ -31,6 +31,13 @@ namespace Kudu.Core.Settings
             return ReadSettings();
         }
 
+        public void UpdateSetting(string key, object value)
+        {
+            DiagnosticsSettings diagnosticsSettings = ReadSettings();
+            diagnosticsSettings.SetSetting(key, value);
+            SaveSettings(diagnosticsSettings);
+        }
+
         public void UpdateSettings(DiagnosticsSettings settings)
         {
             DiagnosticsSettings diagnosticsSettings = ReadSettings();
@@ -62,11 +69,21 @@ namespace Kudu.Core.Settings
                 {
                     string fileContent = null;
                     OperationManager.Attempt(() => fileContent = FileSystemHelpers.ReadAllTextFromFile(_path));
-                    return JsonConvert.DeserializeObject<DiagnosticsSettings>(fileContent);
+
+                    var settings = JsonConvert.DeserializeObject<DiagnosticsSettings>(fileContent);
+                    if (settings == null)
+                    {
+                        throw new InvalidOperationException($"File '{_path}' content is empty or contains only white spaces.");
+                    }
+
+                    return settings;
                 }
                 catch (Exception ex)
                 {
                     _tracer.TraceError(ex);
+
+                    // there must be corrupted value, delete file to reset everything to default
+                    FileSystemHelpers.DeleteFileSafe(_path);
                 }
             }
 

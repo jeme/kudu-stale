@@ -1,23 +1,22 @@
 ﻿using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Web;
 using Kudu.Core.SourceControl;
 using Kudu.Services.ServiceHookHandlers;
-using Moq;
 using Newtonsoft.Json.Linq;
 using Xunit;
-using Xunit.Extensions;
+using Kudu.Core.Deployment;
+using Kudu.Contracts.SourceControl;
+using Moq;
 
 namespace Kudu.Services.Test
 {
     public class GenericHandlerFacts
     {
-        [Theory, PropertyData("SimpleTestData")]
+        [Theory, MemberData("SimpleTestData")]
         public void GenericHandlerSimpleTest(DeployAction expected, IDictionary<string, object> values)
         {
             // Arrange
-            var handler = new GenericHandler();
+            var handler = new GenericHandler(Mock.Of<IRepositoryFactory>());
             var payload = new JObject();
             foreach (var pair in values)
             {
@@ -25,7 +24,7 @@ namespace Kudu.Services.Test
             }
 
             // Act
-            DeploymentInfo deploymentInfo;
+            DeploymentInfoBase deploymentInfo;
             DeployAction result = handler.TryParseDeploymentInfo(request: null, payload: payload, targetBranch: null, deploymentInfo: out deploymentInfo);
 
             // Assert
@@ -45,7 +44,7 @@ namespace Kudu.Services.Test
         public void GenericHandlerRepositoryTypeTest(string url, bool? is_hg, RepositoryType expected)
         {
             // Arrange
-            var handler = new GenericHandler();
+            var handler = new GenericHandler(Mock.Of<IRepositoryFactory>());
             var payload = new JObject();
             payload["url"] = url;
             payload["format"] = "basic";
@@ -55,7 +54,7 @@ namespace Kudu.Services.Test
             }
 
             // Act
-            DeploymentInfo deploymentInfo;
+            DeploymentInfoBase deploymentInfo;
             DeployAction result = handler.TryParseDeploymentInfo(request: null, payload: payload, targetBranch: null, deploymentInfo: out deploymentInfo);
 
             // Assert
@@ -75,13 +74,13 @@ namespace Kudu.Services.Test
         public void GenericHandlerDeployerTest(string url, string expected)
         {
             // Arrange
-            var handler = new GenericHandler();
+            var handler = new GenericHandler(Mock.Of<IRepositoryFactory>());
             var payload = new JObject();
             payload["url"] = url;
             payload["format"] = "basic";
 
             // Act
-            DeploymentInfo deploymentInfo;
+            DeploymentInfoBase deploymentInfo;
             DeployAction result = handler.TryParseDeploymentInfo(request: null, payload: payload, targetBranch: null, deploymentInfo: out deploymentInfo);
 
             // Assert
@@ -100,7 +99,7 @@ namespace Kudu.Services.Test
         public void GenericHandlerBranchTest(string url, string repoUrl, string commitId)
         {
             // Act
-            var deploymentInfo = new DeploymentInfo();
+            var deploymentInfo = new DeploymentInfo(Mock.Of<IRepositoryFactory>());
 
             GenericHandler.SetRepositoryUrl(deploymentInfo, url);
             
@@ -117,13 +116,13 @@ namespace Kudu.Services.Test
         public void GenericHandlerInvalidUrl(string url)
         {
             // Arrange
-            var handler = new GenericHandler();
+            var handler = new GenericHandler(Mock.Of<IRepositoryFactory>());
             var payload = new JObject();
             payload["url"] = url;
             payload["format"] = "basic";
 
             // Act
-            DeploymentInfo deploymentInfo;
+            DeploymentInfoBase deploymentInfo;
 
             // Assert
             Assert.Throws<InvalidOperationException>(() =>

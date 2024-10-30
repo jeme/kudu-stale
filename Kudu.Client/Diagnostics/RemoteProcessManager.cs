@@ -38,11 +38,32 @@ namespace Kudu.Client.Diagnostics
             return Client.GetJsonAsync<ProcessInfo>(id.ToString());
         }
 
+        public Task<ProcessEnvironmentInfo> GetEnvironmentAsync(int id, string filter)
+        {
+            return Client.GetJsonAsync<ProcessEnvironmentInfo>($"{id}/environments/{filter}");
+        }
+
         public async Task KillProcessAsync(int id, bool throwOnError = true)
         {
             try
             {
                 HttpResponseMessage response = await Client.DeleteAsync(id.ToString());
+                response.EnsureSuccessful().Dispose();
+            }
+            catch (Exception)
+            {
+                if (throwOnError)
+                {
+                    throw;
+                }
+            }
+        }
+
+        public async Task StopProcessAsync(int id, bool throwOnError = true)
+        {
+            try
+            {
+                HttpResponseMessage response = await Client.PostAsync($"{id}/stop", new StringContent(string.Empty, Encoding.UTF8, "text/plain"));
                 response.EnsureSuccessful().Dispose();
             }
             catch (Exception)
@@ -63,27 +84,6 @@ namespace Kudu.Client.Diagnostics
             if (dumpType > 0)
             {
                 path.AppendFormat("{0}dumpType={1}", separator, dumpType);
-                separator = '&';
-            }
-            if (!String.IsNullOrEmpty(format))
-            {
-                path.AppendFormat("{0}format={1}", separator, format);
-                separator = '&';
-            }
-
-            HttpResponseMessage response = await Client.GetAsync(path.ToString());
-            return await response.EnsureSuccessful().Content.ReadAsStreamAsync();
-        }
-
-        public async Task<Stream> GCDump(int id = 0, int maxDumpCountK = 0, string format = null)
-        {
-            var path = new StringBuilder();
-            path.AppendFormat("{0}/gcdump", id);
-
-            var separator = '?';
-            if (maxDumpCountK > 0)
-            {
-                path.AppendFormat("{0}maxDumpCountK={1}", separator, maxDumpCountK);
                 separator = '&';
             }
             if (!String.IsNullOrEmpty(format))

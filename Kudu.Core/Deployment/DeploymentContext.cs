@@ -14,6 +14,8 @@ namespace Kudu.Core.Deployment
         /// </summary>
         public string NextManifestFilePath { get; set; }
 
+        public bool IgnoreManifest { get; set; }
+
         /// <summary>
         /// Writes diagnostic output to the trace.
         /// </summary>
@@ -44,5 +46,9 @@ namespace Kudu.Core.Deployment
         /// </summary>
         public string CommitId { get; set; }
 
+        /// <summary>
+        // Commit message of the repository to be deployed.
+        /// </summary>
+        public string Message { get; set; }
     }
 }

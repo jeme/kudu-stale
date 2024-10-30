@@ -4,13 +4,11 @@ using System.Configuration;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Net.NetworkInformation;
-using System.Runtime.ConstrainedExecution;
-using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Kudu.Client.Deployment;
+using Kudu.Client.Infrastructure;
 using Kudu.Contracts.Settings;
 using Kudu.Contracts.SourceControl;
 using Kudu.Core.Infrastructure;
@@ -28,14 +26,14 @@ namespace Kudu.SiteManagement
         private const string HostingStartHtml = "hostingstart.html";
         private const string HostingStartHtmlContents = @"<html>
 <head>
-<title>This web site has been successfully created</title>
+<title>This web site is up and running</title>
 <style type=""text/css"">
     BODY { color: #444444; background-color: #E5F2FF; font-family: verdana; margin: 0px; text-align: center; margin-top: 100px; }
     H1 { font-size: 16pt; margin-bottom: 4px; }
 </style>
 </head>
 <body>
-<h1>This web site has been successfully created</h1><br/>
+<h1>This web site is up and running</h1><br/>
 </body> 
 </html>";
 
@@ -63,11 +61,18 @@ namespace Kudu.SiteManagement
         {
             using (var iis = GetServerManager())
             {
-                // The app pool is the app name
-                return iis.Sites.Where(x => x.Name.StartsWith("kudu_", StringComparison.OrdinalIgnoreCase))
-                                .Select(x => x.Applications[0].ApplicationPoolName)
-                                .Distinct()
-                                .ToList();
+                try
+                {
+                    // The app pool is the app name
+                    return iis.Sites.Where(x => x.Name.StartsWith("kudu_", StringComparison.OrdinalIgnoreCase))
+                                    .Select(x => x.Applications[0].ApplicationPoolName)
+                                    .Distinct()
+                                    .ToList();
+                }
+                catch
+                {
+                    return new List<string>();
+                }
             }
         }
 
@@ -164,7 +169,8 @@ namespace Kudu.SiteManagement
                     await OperationManager.AttemptAsync(() => WaitForSiteAsync(serviceBindings.First().ToString()));
 
                     // Set initial ScmType state to LocalGit
-                    var settings = new RemoteDeploymentSettingsManager(serviceBindings.First() + "api/settings");
+                    var credentials = _context.Configuration.BasicAuthCredential.GetCredentials();
+                    var settings = new RemoteDeploymentSettingsManager(serviceUrls.First() + "api/settings");
                     await settings.SetValue(SettingsKeys.ScmType, ScmType.LocalGit);
 
                     return new Site
@@ -177,7 +183,7 @@ namespace Kudu.SiteManagement
                 {
                     try
                     {
-                        DeleteSiteAsync(applicationName).Wait();
+                        await DeleteSiteAsync(applicationName);
                     }
                     catch
                     {
@@ -188,7 +194,95 @@ namespace Kudu.SiteManagement
             }
         }
 
-        //NOTE: Small temprary object for configuration.
+        public async Task ResetSiteContent(string applicationName)
+        {
+            const int MaxWaitSeconds = 300;
+            using (ServerManager iis = GetServerManager())
+            {
+                var appPool = iis.ApplicationPools.FirstOrDefault(ap => ap.Name == applicationName);
+                if (appPool == null)
+                {
+                    throw new InvalidOperationException($"Failed to recycle {applicationName} app pool.  It does not exist!");
+                }
+
+                // the app pool is running or starting, so stop it first.
+                if (appPool.State == ObjectState.Started || appPool.State == ObjectState.Starting)
+                {
+                    // wait for the app to finish before trying to stop
+                    for (int i = 0; i > MaxWaitSeconds && appPool.State == ObjectState.Starting; ++i)
+                    {
+                        await Task.Delay(1000);
+                    }
+
+                    // stop the app if it isn't already stopped
+                    if (appPool.State != ObjectState.Stopped)
+                    {
+                        appPool.Stop();
+                    }
+                }
+
+                // wait for the app to stop
+                for (int i = 0; appPool.State != ObjectState.Stopped; ++i)
+                {
+                    await Task.Delay(1000);
+                    if (i > MaxWaitSeconds)
+                    {
+                        throw new InvalidOperationException($"Failed to recycle {applicationName} app pool.  Its state '{appPool.State}' is not stopped!");
+                    }
+                }
+
+                string root = _context.Paths.GetApplicationPath(applicationName);
+                string siteRoot = _context.Paths.GetLiveSitePath(applicationName);
+                foreach (var dir in Directory.GetDirectories(root).Concat(new[] { Path.Combine(Path.GetTempPath(), applicationName) }))
+                {
+                    if (!Directory.Exists(dir))
+                    {
+                        continue;
+                    }
+
+                    // use rmdir command since it handles both hidden and read-only files
+                    OperationManager.SafeExecute(() => Process.Start(new ProcessStartInfo
+                    {
+                        Arguments = $"/C rmdir /s /q \"{dir}\"",
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        CreateNoWindow = true,
+                        FileName = "cmd.exe"
+                    })?.WaitForExit());
+
+                    if (Directory.Exists(dir) && !dir.Contains(".deleted."))
+                    {
+                        var dirName = Path.GetFileName(dir);
+                        OperationManager.Attempt(() => Process.Start(new ProcessStartInfo
+                        {
+                            Arguments = $"/C ren \"{dir}\" \"{dirName}.deleted.{Guid.NewGuid():N}\"",
+                            WindowStyle = ProcessWindowStyle.Hidden,
+                            CreateNoWindow = true,
+                            FileName = "cmd.exe"
+                        })?.WaitForExit());
+                    }
+                }
+
+                var webRoot = Path.Combine(siteRoot, Constants.WebRoot);
+                FileSystemHelpers.EnsureDirectory(siteRoot);
+                FileSystemHelpers.EnsureDirectory(webRoot);
+                File.WriteAllText(Path.Combine(webRoot, HostingStartHtml), HostingStartHtmlContents);
+
+                // start the app
+                appPool.Start();
+
+                // wait for the app to stop
+                for (int i = 0; appPool.State != ObjectState.Started; ++i)
+                {
+                    await Task.Delay(1000);
+                    if (i > MaxWaitSeconds)
+                    {
+                        throw new InvalidOperationException($"Failed to recycle {applicationName} app pool.  Its state '{appPool.State}' is not started!");
+                    }
+                }
+            }
+        }
+
+        //NOTE: Small temporary object for configuration.
         private struct BindingInformation
         {
             public string Binding { get; set; }
@@ -241,7 +335,7 @@ namespace Kudu.SiteManagement
             }
 
             //NOTE: DeleteSiteAsync was not split into to usings before, but by calling CommitChanges midway, the iis manager goes into a read-only mode on Windows7 which then provokes
-            //      an error on the next commit. On the next pass. Aquirering a new Manager seems like a more safe aproach.
+            //      an error on the next commit. On the next pass. Acquirering a new Manager seems like a more safe approach.
             using (var iis = GetServerManager())
             {
                 string appPath = _context.Paths.GetApplicationPath(applicationName);
@@ -381,6 +475,17 @@ namespace Kudu.SiteManagement
                 kuduAppPool.ManagedRuntimeVersion = "v4.0";
                 kuduAppPool.AutoStart = true;
                 kuduAppPool.ProcessModel.LoadUserProfile = true;
+                kuduAppPool.Failure.RapidFailProtection = false;
+
+                // We've seen strange errors after switching to VS 2015 msbuild when using App Pool Identity.
+                // The errors look like:
+                // error CS0041 : Unexpected error writing debug information -- 'Retrieving the COM class factory for component with CLSID {0AE2DEB0-F901-478B-BB9F-881EE8066788} failed due to the following error : 800703fa Illegal operation attempted on a registry key that has been marked for deletion. (Exception from HRESULT: 0x800703FA).'
+                // To work around this, we're using NetworkService. But it would be good to understand the root
+                // cause of the issue.
+                if (ConfigurationManager.AppSettings["UseNetworkServiceIdentity"] == "true")
+                {
+                    kuduAppPool.ProcessModel.IdentityType = ProcessModelIdentityType.NetworkService;
+                }
             }
 
             EnsureDefaultDocument(iis);
@@ -580,14 +685,15 @@ namespace Kudu.SiteManagement
             FileSystemHelpers.DeleteDirectorySafe(physicalPath);
         }
 
-        private static ServerManager GetServerManager()
+        private ServerManager GetServerManager()
         {
-            return new ServerManager(Environment.ExpandEnvironmentVariables("%windir%\\system32\\inetsrv\\config\\applicationHost.config"));
+            return new ServerManager(_context.Configuration.IISConfigurationFile);
         }
 
-        private static async Task WaitForSiteAsync(string serviceUrl)
+        private async Task WaitForSiteAsync(string serviceUrl)
         {
-            using (var client = new HttpClient())
+            var credentials = _context.Configuration.BasicAuthCredential.GetCredentials();
+            using (var client = HttpClientHelper.CreateClient(serviceUrl, credentials))
             {
                 using (var response = await client.GetAsync(serviceUrl))
                 {

@@ -2,12 +2,13 @@
 using Kudu.Core.Deployment;
 using Kudu.FunctionalTests.Infrastructure;
 using Kudu.TestHarness;
+using Kudu.TestHarness.Xunit;
 using Xunit;
 
 namespace Kudu.FunctionalTests
 {
-    [TestHarnessClassCommand]
-    public class DeploymentActionsTests
+    [KuduXunitTestClass]
+    public class PostDeploymentActionsShouldBeCalledOnSuccessfulDeploymentTests
     {
         [Fact]
         public void PostDeploymentActionsShouldBeCalledOnSuccessfulDeployment()
@@ -15,6 +16,8 @@ namespace Kudu.FunctionalTests
             string testName = "PostDeploymentActionsShouldBeCalledOnSuccessfulDeployment";
             string testLine1 = "test script 1 is running";
             string testLine2 = "test script 2 is running too";
+            string psTestLine1 = "ps test script 1 is running";
+            string psTestLine2 = "ps test script 2 is running too";
 
             const string testCommitIdPrefix = @"SCM_COMMIT_ID = ";
             const string testCommitIdVariable = @"%SCM_COMMIT_ID%";
@@ -47,6 +50,14 @@ namespace Kudu.FunctionalTests
                             @"@echo off
                               echo " + testCommitIdPrefix + testCommitIdVariable);
 
+                        appManager.VfsManager.WriteAllText(
+                            @"site\deployments\tools\PostDeploymentActions\ps_script_1.ps1",
+                            "write-output '" + psTestLine1 + "'");
+
+                        appManager.VfsManager.WriteAllText(
+                            @"site\deployments\tools\PostDeploymentActions\ps_script_2.ps1",
+                            "write-output '" + psTestLine2 + "'");
+
                         TestTracer.Trace("Deploy test app");
                         appManager.GitDeploy(appRepository.PhysicalPath);
 
@@ -55,13 +66,17 @@ namespace Kudu.FunctionalTests
                         Assert.Equal(1, deploymentResults.Count);
                         Assert.Equal(DeployStatus.Success, deploymentResults[0].Status);
 
-                        KuduAssert.VerifyLogOutput(appManager, deploymentResults[0].Id, testLine1, testLine2);
+                        KuduAssert.VerifyLogOutput(appManager, deploymentResults[0].Id, testLine1, testLine2, psTestLine1, psTestLine2);
                         KuduAssert.VerifyLogOutput(appManager, deploymentResults[0].Id, testCommitIdPrefix + deploymentResults[0].Id);
                     }
                 });
             }
         }
+    }
 
+    [KuduXunitTestClass]
+    public class PostDeploymentActionWhichFailsShouldFailDeploymentTests
+    {
         [Fact]
         public void PostDeploymentActionWhichFailsShouldFailDeployment()
         {
@@ -122,7 +137,11 @@ namespace Kudu.FunctionalTests
                 });
             }
         }
+    }
 
+    [KuduXunitTestClass]
+    public class PostDeploymentActionsShouldNotBeCalledOnFailedDeploymentTests
+    {
         [Fact]
         public void PostDeploymentActionsShouldNotBeCalledOnFailedDeployment()
         {

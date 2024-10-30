@@ -24,6 +24,12 @@ namespace Kudu.SiteManagement.Configuration.Section
             get { return this["applications"] as PathConfigurationElement; }
         }
 
+        [ConfigurationProperty("iisConfigurationFile", IsRequired = false)]
+        public PathConfigurationElement IisConfigurationFile
+        {
+            get { return this["iisConfigurationFile"] as PathConfigurationElement; }
+        }
+
         [ConfigurationProperty("bindings", IsRequired = false)]
         public BindingsConfigurationElementCollection Bindings
         {
@@ -35,5 +41,13 @@ namespace Kudu.SiteManagement.Configuration.Section
         {
             get { return this["certificateStores"] as CertificateStoresConfigurationElementCollection; }
         }
+
+
+        [ConfigurationProperty( "basicAuth" , IsRequired = false )]
+        public BasicAuthConfigurationElement BasicAuthCredential
+        {
+            get { return this[ "basicAuth" ] as BasicAuthConfigurationElement; }
+        }
+
     }
 }

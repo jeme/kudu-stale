@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using Kudu.Contracts.Infrastructure;
+using Newtonsoft.Json;
 
 namespace Kudu.Services.Arm
 {
@@ -40,6 +42,40 @@ namespace Kudu.Services.Arm
             return request != null &&
                    request.Headers != null &&
                    request.Headers.Contains(GeoLocationHeaderKey);
+        }
+
+        public static bool IsAzureResourceManagerUserAgent(HttpRequestMessage request)
+        {
+            return null != request?.Headers?.UserAgent?.FirstOrDefault(u => u.Product != null && u.Product.Name != null
+                && u.Product.Name.IndexOf("azure-resource-manager", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        public static bool IsVSTSDevOpsUserAgent(HttpRequestMessage request)
+        {
+            return null != request?.Headers?.UserAgent?.FirstOrDefault(u => u.Product != null && u.Product.Name != null
+                && u.Product.Name.IndexOf("VSTS_", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        public static bool IsRbacContributorRequest(HttpRequestMessage request)
+        {
+            IEnumerable<string> headerValues;
+            if (request.Headers.TryGetValues(Constants.RoleBasedContributorHeader, out headerValues))
+            {
+                return headerValues.FirstOrDefault() == "1";
+            }
+
+            return false;
+        }
+
+        public static bool IsLegacyAuthorizationSource(HttpRequestMessage request)
+        {
+            IEnumerable<string> headerValues;
+            if (request.Headers.TryGetValues(Constants.ClientAuthorizationSourceHeader, out headerValues))
+            {
+                return string.Equals(headerValues.FirstOrDefault(), "legacy", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return false;
         }
 
         private static ArmListEntry<T> Create<T>(IEnumerable<T> objects, HttpRequestMessage request) where T : INamedObject
@@ -103,6 +139,41 @@ namespace Kudu.Services.Arm
             }
 
             return armEntry;
+        }
+
+        public static HttpResponseMessage CreateErrorResponse(HttpRequestMessage request, HttpStatusCode statusCode, Exception exception)
+        {
+            if (IsArmRequest(request))
+            {
+                return request.CreateResponse(statusCode, new ArmErrorInfo(statusCode, exception));
+            }
+
+            return request.CreateErrorResponse(statusCode, exception);
+        }
+
+        // this error will be deserialized conforming with ARM spec
+        public class ArmErrorInfo
+        {
+            public ArmErrorInfo(HttpStatusCode code, Exception exception)
+            {
+                Error = new ArmErrorDetails
+                {
+                    Code = code.ToString(),
+                    Message = exception.ToString()
+                };
+            }
+
+            [JsonProperty(PropertyName = "error")]
+            public ArmErrorDetails Error { get; private set; }
+
+            public class ArmErrorDetails
+            {
+                [JsonProperty(PropertyName = "code")]
+                public string Code { get; set; }
+
+                [JsonProperty(PropertyName = "message")]
+                public string Message { get; set; }
+            }
         }
     }
 }

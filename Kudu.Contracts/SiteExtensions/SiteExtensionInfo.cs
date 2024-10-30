@@ -1,9 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
+using System.Xml.Linq;
 using Kudu.Contracts.Infrastructure;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
+using Newtonsoft.Json.Linq;
 using NuGet.Client.VisualStudio;
 
 namespace Kudu.Contracts.SiteExtensions
@@ -14,13 +17,49 @@ namespace Kudu.Contracts.SiteExtensions
         public enum SiteExtensionType
         {
             Gallery,
-            PreInstalledMonaco,
-            PreInstalledEnabled,
             WebRoot
         }
 
         public SiteExtensionInfo()
         {
+        }
+
+        public SiteExtensionInfo(XElement element)
+        {
+            var elements = element.Elements();
+            Id = GetElementValue(elements, "Id");
+            Version = GetElementValue(elements, "Version");
+            Title = GetElementValue(elements, "Title");
+            Description = GetElementValue(elements, "Description");
+            Authors = GetElementValue(elements, "Authors")?.Split(',').Select(n => n.Trim());
+            ProjectUrl = GetElementValue(elements, "ProjectUrl");
+            LicenseUrl = GetElementValue(elements, "LicenseUrl");
+            Summary = GetElementValue(elements, "Summary");
+            IconUrl = GetElementValue(elements, "IconUrl") ?? "https://www.nuget.org/Content/Images/packageDefaultIcon-50x50.png";
+
+            // this is to maintain the same behavior as V1
+            //if (int.TryParse(GetElementValue(elements, "DownloadCount"), out int downloadCount))
+            //{
+            //    DownloadCount = downloadCount;
+            //}
+            //if (DateTime.TryParse(GetElementValue(elements, "Published"), out DateTime publishedDateTime))
+            //{
+            //    PublishedDateTime = publishedDateTime;
+            //}
+        }
+
+        public SiteExtensionInfo(JObject json)
+        {
+            Id = json.Value<string>("id");
+            Version = json.Value<string>("version");
+            Title = json.Value<string>("title");
+            Description = json.Value<string>("description");
+            Authors = json.Value<string>("authors")?.Split(',').Select(n => n.Trim());
+            ProjectUrl = json.Value<string>("projectUrl");
+            LicenseUrl = json.Value<string>("licenseUrl");
+            Summary = json.Value<string>("description");
+            IconUrl = json.Value<string>("iconUrl") ?? "https://www.nuget.org/Content/Images/packageDefaultIcon-50x50.png";
+            PackageUri = json.Value<string>("packageUri");
         }
 
         public SiteExtensionInfo(SiteExtensionInfo info)
@@ -42,6 +81,8 @@ namespace Kudu.Contracts.SiteExtensions
             LocalIsLatestVersion = info.LocalIsLatestVersion;
             LocalPath = info.LocalPath;
             InstalledDateTime = info.InstalledDateTime;
+            InstallationArgs = info.InstallationArgs;
+            PackageUri = info.PackageUri;
         }
 
         public SiteExtensionInfo(UIPackageMetadata data)
@@ -53,7 +94,7 @@ namespace Kudu.Contracts.SiteExtensions
             Description = data.Description;
             Version = data.Identity.Version.ToNormalizedString();
             ProjectUrl = data.ProjectUrl == null ? null : data.ProjectUrl.ToString();
-            IconUrl = data.IconUrl == null ? "https://www.siteextensions.net/Content/Images/packageDefaultIcon-50x50.png" : data.IconUrl.ToString();
+            IconUrl = data.IconUrl == null ? "https://www.nuget.org/Content/Images/packageDefaultIcon-50x50.png" : data.IconUrl.ToString();
             LicenseUrl = data.LicenseUrl == null ? null : data.LicenseUrl.ToString();
             Authors = data.Authors.Split(new string[] { "  " }, StringSplitOptions.RemoveEmptyEntries);
             PublishedDateTime = data.Published;
@@ -146,6 +187,13 @@ namespace Kudu.Contracts.SiteExtensions
             set;
         }
 
+        [JsonProperty(PropertyName = "installer_command_line_params")]
+        public string InstallationArgs
+        {
+            get;
+            set;
+        }
+
         [JsonProperty(PropertyName = "published_date_time")]
         public DateTimeOffset? PublishedDateTime
         {
@@ -190,7 +238,7 @@ namespace Kudu.Contracts.SiteExtensions
 
         // For Arm Request
         [JsonIgnore]
-        [SuppressMessage("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes", Justification = "to provide ARM spceific name")]
+        [SuppressMessage("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes", Justification = "to provide ARM specific name")]
         string INamedObject.Name { get { return Id; } }
 
         [JsonProperty(PropertyName = "provisioningState")]
@@ -205,6 +253,33 @@ namespace Kudu.Contracts.SiteExtensions
         {
             get;
             set;
+        }
+
+        /// <summary>
+        /// explicit url to download nupkg such as https://globalcdn.nuget.org/packages/microsoft.applicationinsights.azurewebsites.2.6.5.nupkg
+        /// </summary>
+        [JsonProperty(PropertyName = "packageUri")]
+        public string PackageUri
+        {
+            get;
+            set;
+        }
+
+        private static string GetElementValue(IEnumerable<XElement> elements, string name)
+        {
+            var element = elements.FirstOrDefault(e => e.Name.LocalName.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (element == null)
+            {
+                return null;
+            }
+
+            var value = element.Value;
+            if (string.IsNullOrEmpty(value) && element.Attributes().Any(a => a.Name.LocalName.Equals("null", StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            return value;
         }
     }
 }

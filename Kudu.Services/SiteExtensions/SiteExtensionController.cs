@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Http;
 using Kudu.Contracts.Infrastructure;
+using Kudu.Contracts.Settings;
 using Kudu.Contracts.SiteExtensions;
 using Kudu.Contracts.Tracing;
 using Kudu.Core;
@@ -25,13 +26,32 @@ namespace Kudu.Services.SiteExtensions
     public class SiteExtensionController : ApiController
     {
         private readonly ISiteExtensionManager _manager;
+        private readonly SiteExtensionManager _v1Manager;
         private readonly IEnvironment _environment;
         private readonly ITraceFactory _traceFactory;
         private readonly IAnalytics _analytics;
         private readonly string _siteExtensionRoot;
 
-        public SiteExtensionController(ISiteExtensionManager manager, IEnvironment environment, ITraceFactory traceFactory, IAnalytics analytics)
+        // List of packages that had to be renamed when moving to nuget.org because the siteextension.org id conflicted
+        // with an existing nuget.org id
+        static Dictionary<string, string> _packageIdRedirects = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
+            { "python2714x64", "azureappservice-python2714x64" },
+            { "python2714x86", "azureappservice-python2714x86" },
+            { "python353x64", "azureappservice-python353x64" },
+            { "python353x86", "azureappservice-python353x86" },
+            { "python354x64", "azureappservice-python354x64" },
+            { "python354x86", "azureappservice-python354x86" },
+            { "python362x64", "azureappservice-python362x64" },
+            { "python362x86", "azureappservice-python362x86" },
+            { "python364x64", "azureappservice-python364x64" },
+            { "python364x86", "azureappservice-python364x86" },
+            { "NewRelic.Azure.WebSites", "NewRelic.Azure.WebSites.Extension"}
+        };
+
+        public SiteExtensionController(ISiteExtensionManager manager, SiteExtensionManager v1Manager, IEnvironment environment, ITraceFactory traceFactory, IAnalytics analytics)
+        {
+            _v1Manager = v1Manager;
             _manager = manager;
             _environment = environment;
             _traceFactory = traceFactory;
@@ -42,16 +62,17 @@ namespace Kudu.Services.SiteExtensions
         [HttpGet]
         public async Task<HttpResponseMessage> GetRemoteExtensions(string filter = null, bool allowPrereleaseVersions = false, string feedUrl = null)
         {
+            var manager = GetSiteExtensionManager(forceUseV1: !string.IsNullOrEmpty(feedUrl));
             return Request.CreateResponse(
                 HttpStatusCode.OK,
-                ArmUtils.AddEnvelopeOnArmRequest<SiteExtensionInfo>(await _manager.GetRemoteExtensions(filter, allowPrereleaseVersions, feedUrl), Request));
+                ArmUtils.AddEnvelopeOnArmRequest<SiteExtensionInfo>(await manager.GetRemoteExtensions(filter, allowPrereleaseVersions, feedUrl), Request));
         }
 
         [HttpGet]
         public async Task<HttpResponseMessage> GetRemoteExtension(string id, string version = null, string feedUrl = null)
         {
-            SiteExtensionInfo extension = await _manager.GetRemoteExtension(id, version, feedUrl);
-
+            var manager = GetSiteExtensionManager(forceUseV1: !string.IsNullOrEmpty(feedUrl));
+            SiteExtensionInfo extension = await manager.GetRemoteExtension(id, version, feedUrl);
             if (extension == null)
             {
                 throw new HttpResponseException(Request.CreateErrorResponse(HttpStatusCode.NotFound, id));
@@ -65,9 +86,10 @@ namespace Kudu.Services.SiteExtensions
         [HttpGet]
         public async Task<HttpResponseMessage> GetLocalExtensions(string filter = null, bool checkLatest = true)
         {
+            var manager = GetSiteExtensionManager();
             return Request.CreateResponse(
                 HttpStatusCode.OK,
-                ArmUtils.AddEnvelopeOnArmRequest<SiteExtensionInfo>(await _manager.GetLocalExtensions(filter, checkLatest), Request));
+                ArmUtils.AddEnvelopeOnArmRequest<SiteExtensionInfo>(await manager.GetLocalExtensions(filter, checkLatest), Request));
         }
 
         [HttpGet]
@@ -77,6 +99,7 @@ namespace Kudu.Services.SiteExtensions
 
             SiteExtensionInfo extension = null;
             HttpResponseMessage responseMessage = null;
+            var manager = GetSiteExtensionManager();
             if (ArmUtils.IsArmRequest(Request))
             {
                 tracer.Trace("Incoming GetLocalExtension is arm request.");
@@ -84,11 +107,12 @@ namespace Kudu.Services.SiteExtensions
 
                 if (string.Equals(Constants.SiteExtensionOperationInstall, armSettings.Operation, StringComparison.OrdinalIgnoreCase))
                 {
-                    var installationLock = SiteExtensionInstallationLock.CreateLock(_environment.SiteExtensionSettingsPath, id);
-                    if (!installationLock.IsHeld
+                    bool isInstallationLockHeld = IsInstallationLockHeldSafeCheck(id);
+                    if (!isInstallationLockHeld
                         && string.Equals(Constants.SiteExtensionProvisioningStateSucceeded, armSettings.ProvisioningState, StringComparison.OrdinalIgnoreCase))
                     {
-                        extension = await _manager.GetLocalExtension(id, checkLatest);
+                        tracer.Trace("Package {0} was just installed.", id);
+                        extension =  await ThrowsConflictIfIOException(manager.GetLocalExtension(id, checkLatest));
                         if (extension == null)
                         {
                             using (tracer.Step("Status indicate {0} installed, but not able to find it from local repo.", id))
@@ -102,9 +126,9 @@ namespace Kudu.Services.SiteExtensions
                         }
                         else
                         {
-                            if (SiteExtensionInstallationLock.IsAnyPendingLock(_environment.SiteExtensionSettingsPath))
+                            if (SiteExtensionInstallationLock.IsAnyPendingLock(_environment.SiteExtensionSettingsPath, tracer))
                             {
-                                using (tracer.Step("{0} finsihed installation. But there is other installation on-going, fake the status to be Created, so that we can restart once for all.", id))
+                                using (tracer.Step("{0} finished installation. But there is other installation on-going, fake the status to be Created, so that we can restart once for all.", id))
                                 {
                                     // if there is other pending installation, fake the status
                                     extension.ProvisioningState = Constants.SiteExtensionProvisioningStateCreated;
@@ -117,10 +141,10 @@ namespace Kudu.Services.SiteExtensions
                                 // since "IsAnyInstallationRequireRestart" is depending on properties inside site extension status files 
                                 // while "UpdateArmSettingsForSuccessInstallation" will override some of the values
                                 bool requireRestart = SiteExtensionStatus.IsAnyInstallationRequireRestart(_environment.SiteExtensionSettingsPath, _siteExtensionRoot, tracer, _analytics);
-                                // clear operation, since opeation is done
+                                // clear operation, since operation is done
                                 if (UpdateArmSettingsForSuccessInstallation())
                                 {
-                                    using (tracer.Step("{0} finsihed installation and batch update lock aquired. Will notify Antares GEO to restart website.", id))
+                                    using (tracer.Step("{0} finished installation and batch update lock aquired. Will notify Antares GEO to restart website.", id))
                                     {
                                         responseMessage = Request.CreateResponse(armSettings.Status, ArmUtils.AddEnvelopeOnArmRequest<SiteExtensionInfo>(extension, Request));
 
@@ -139,9 +163,9 @@ namespace Kudu.Services.SiteExtensions
                             }
                         }
                     }
-                    else if (!installationLock.IsHeld && !armSettings.IsTerminalStatus())
+                    else if (!isInstallationLockHeld && !armSettings.IsTerminalStatus())
                     {
-                        // no background thread is working on instalation
+                        // no background thread is working on installation
                         // app-pool must be recycled
                         using (tracer.Step("{0} installation cancelled, background thread must be dead.", id))
                         {
@@ -165,8 +189,11 @@ namespace Kudu.Services.SiteExtensions
                 // normal GET request
                 if (responseMessage == null)
                 {
-                    tracer.Trace("ARM get : {0}", id);
-                    extension = await _manager.GetLocalExtension(id, checkLatest);
+                    using (tracer.Step("ARM get : {0}", id))
+                    {
+                        extension = await ThrowsConflictIfIOException(manager.GetLocalExtension(id, checkLatest));
+                    }
+
                     if (extension == null)
                     {
                         extension = new SiteExtensionInfo { Id = id };
@@ -181,8 +208,10 @@ namespace Kudu.Services.SiteExtensions
             }
             else
             {
-                tracer.Trace("Get : {0}", id);
-                extension = await _manager.GetLocalExtension(id, checkLatest);
+                using (tracer.Step("Get: {0}, is not a ARM request.", id))
+                {
+                    extension = await ThrowsConflictIfIOException(manager.GetLocalExtension(id, checkLatest));
+                }
 
                 if (extension == null)
                 {
@@ -198,6 +227,12 @@ namespace Kudu.Services.SiteExtensions
         [HttpPut]
         public async Task<HttpResponseMessage> InstallExtensionArm(string id, ArmEntry<SiteExtensionInfo> requestInfo)
         {
+            if (requestInfo == null)
+            {
+                // Body should not be empty
+                return Request.CreateResponse(HttpStatusCode.BadRequest);
+            }
+
             return await InstallExtension(id, requestInfo.Properties);
         }
 
@@ -206,8 +241,15 @@ namespace Kudu.Services.SiteExtensions
         {
             var startTime = DateTime.UtcNow;
             var tracer = _traceFactory.GetTracer();
-            var installationLock = SiteExtensionInstallationLock.CreateLock(_environment.SiteExtensionSettingsPath, id);
-            if (installationLock.IsHeld)
+
+            // If there is an id redirect for it, switch to the new id
+            if (_packageIdRedirects.TryGetValue(id, out string newId))
+            {
+                tracer.Trace($"Package id '{id}' was redirected to id '{newId}.");
+                id = newId;
+            }
+
+            if (IsInstallationLockHeldSafeCheck(id))
             {
                 tracer.Trace("{0} is installing with another request, reject current request with Conflict status.", id);
                 throw new HttpResponseException(Request.CreateErrorResponse(HttpStatusCode.Conflict, id));
@@ -218,8 +260,11 @@ namespace Kudu.Services.SiteExtensions
                 requestInfo = new SiteExtensionInfo();
             }
 
-            tracer.Trace("Installing {0} - {1} from {2} synchronously", id, requestInfo.Version, requestInfo.FeedUrl);
-            SiteExtensionInfo result = await InitInstallSiteExtension(id, requestInfo.Type);
+            ValidatePackageUri(id, requestInfo, tracer);
+
+            tracer.Trace("Installing {0}, version: {1} from feed: {2}, packageUri: {3}", id, requestInfo.Version, requestInfo.FeedUrl, StringUtils.ObfuscatePath(requestInfo.PackageUri));
+            SiteExtensionInfo result = await InitInstallSiteExtension(id, requestInfo);
+            var manager = GetSiteExtensionManager(forceUseV1: !string.IsNullOrEmpty(requestInfo.FeedUrl) && string.IsNullOrEmpty(requestInfo.PackageUri));
 
             if (ArmUtils.IsArmRequest(Request))
             {
@@ -227,14 +272,9 @@ namespace Kudu.Services.SiteExtensions
                 ITracer backgroundTracer = NullTracer.Instance;
                 IDictionary<string, string> traceAttributes = new Dictionary<string, string>();
 
-                if (tracer.TraceLevel == TraceLevel.Off)
-                {
-                    backgroundTracer = NullTracer.Instance;
-                }
-
                 if (tracer.TraceLevel > TraceLevel.Off)
                 {
-                    backgroundTracer = new XmlTracer(_environment.TracePath, tracer.TraceLevel);
+                    backgroundTracer = new CascadeTracer(new XmlTracer(_environment.TracePath, tracer.TraceLevel), new ETWTracer(_environment.RequestId, "PUT"));
                     traceAttributes = new Dictionary<string, string>()
                     {
                         {"url", Request.RequestUri.AbsolutePath},
@@ -259,8 +299,10 @@ namespace Kudu.Services.SiteExtensions
                     {
                         try
                         {
-                            backgroundTracer.Trace("Background thread started for {0} installation", id);
-                            _manager.InstallExtension(id, requestInfo.Version, requestInfo.FeedUrl, requestInfo.Type, backgroundTracer).Wait();
+                            using (backgroundTracer.Step("Background thread started for {0} installation", id))
+                            {
+                                manager.InstallExtension(id, requestInfo, backgroundTracer).Wait();
+                            }
                         }
                         finally
                         {
@@ -289,8 +331,8 @@ namespace Kudu.Services.SiteExtensions
             }
             else
             {
-                result = await _manager.InstallExtension(id, requestInfo.Version, requestInfo.FeedUrl, requestInfo.Type, tracer);
-
+                result = await manager.InstallExtension(id, requestInfo, tracer);
+ 
                 if (string.Equals(Constants.SiteExtensionProvisioningStateFailed, result.ProvisioningState, StringComparison.OrdinalIgnoreCase))
                 {
                     SiteExtensionStatus armSettings = new SiteExtensionStatus(_environment.SiteExtensionSettingsPath, id, tracer);
@@ -307,10 +349,12 @@ namespace Kudu.Services.SiteExtensions
         public async Task<HttpResponseMessage> UninstallExtension(string id)
         {
             var startTime = DateTime.UtcNow;
+            var tracer = _traceFactory.GetTracer();
+            var manager = GetSiteExtensionManager();
             try
             {
                 HttpResponseMessage response = null;
-                bool isUninstalled = await _manager.UninstallExtension(id);
+                bool isUninstalled = await manager.UninstallExtension(id);
                 if (ArmUtils.IsArmRequest(Request))
                 {
                     if (isUninstalled)
@@ -328,7 +372,7 @@ namespace Kudu.Services.SiteExtensions
                     response = Request.CreateResponse(HttpStatusCode.OK, isUninstalled);
                 }
 
-                LogEndEvent(id, (DateTime.UtcNow - startTime), _traceFactory.GetTracer(), defaultResult: Constants.SiteExtensionProvisioningStateSucceeded);
+                LogEndEvent(id, (DateTime.UtcNow - startTime), tracer, defaultResult: Constants.SiteExtensionProvisioningStateSucceeded);
                 return response;
             }
             catch (DirectoryNotFoundException ex)
@@ -340,6 +384,8 @@ namespace Kudu.Services.SiteExtensions
                         result: Constants.SiteExtensionProvisioningStateFailed,
                         message: null,
                         trace: false);
+
+                tracer.TraceError(ex, "Failed to uninstall {0}", id);
                 throw new HttpResponseException(Request.CreateErrorResponse(HttpStatusCode.NotFound, ex));
             }
             catch (Exception ex)
@@ -351,12 +397,19 @@ namespace Kudu.Services.SiteExtensions
                         result: Constants.SiteExtensionProvisioningStateFailed,
                         message: null,
                         trace: false);
+
+                tracer.TraceError(ex, "Failed to uninstall {0}", id);
                 throw ex;
             }
         }
 
+        private ISiteExtensionManager GetSiteExtensionManager(bool forceUseV1 = false)
+        {
+            return forceUseV1 ? _v1Manager : _manager;
+        }
+
         /// <summary>
-        /// Log to MDS when installation/uninstallation finsihed
+        /// Log to MDS when installation/uninstallation finishes
         /// </summary>
         private void LogEndEvent(string id, TimeSpan duration, ITracer tracer, string defaultResult = null)
         {
@@ -371,17 +424,18 @@ namespace Kudu.Services.SiteExtensions
                 jsonSetting.ToString());
         }
 
-        private async Task<SiteExtensionInfo> InitInstallSiteExtension(string id, SiteExtensionInfo.SiteExtensionType type)
+        private async Task<SiteExtensionInfo> InitInstallSiteExtension(string id, SiteExtensionInfo request)
         {
             SiteExtensionStatus settings = new SiteExtensionStatus(_environment.SiteExtensionSettingsPath, id, _traceFactory.GetTracer());
             settings.ProvisioningState = Constants.SiteExtensionProvisioningStateCreated;
             settings.Operation = Constants.SiteExtensionOperationInstall;
             settings.Status = HttpStatusCode.Created;
-            settings.Type = type;
+            settings.Type = request.Type;
             settings.Comment = null;
 
             SiteExtensionInfo info = new SiteExtensionInfo();
             info.Id = id;
+            info.PackageUri = request.PackageUri;
             settings.FillSiteExtensionInfo(info);
             return await Task.FromResult(info);
         }
@@ -393,37 +447,107 @@ namespace Kudu.Services.SiteExtensions
         /// </summary>
         private bool UpdateArmSettingsForSuccessInstallation()
         {
-            var batchUpdateLock = SiteExtensionBatchUpdateStatusLock.CreateLock(_environment.SiteExtensionSettingsPath);
-
-            bool isAnyUpdate = false;
-
-            bool islocked = batchUpdateLock.TryLockOperation(() =>
+            var tracer = _traceFactory.GetTracer();
+            using (tracer.Step("Checking if there is any installation finished recently, if there is one, update its status."))
             {
-                var tracer = _traceFactory.GetTracer();
-                string[] packageDirs = FileSystemHelpers.GetDirectories(_environment.SiteExtensionSettingsPath);
-                foreach (var dir in packageDirs)
+                var batchUpdateLock = SiteExtensionBatchUpdateStatusLock.CreateLock(_environment.SiteExtensionSettingsPath);
+
+                bool isAnyUpdate = false;
+
+                try
                 {
-                    var dirInfo = new DirectoryInfo(dir);   // arm setting folder name is same as package id
-                    SiteExtensionStatus armSettings = new SiteExtensionStatus(_environment.SiteExtensionSettingsPath, dirInfo.Name, tracer);
-                    if (string.Equals(armSettings.Operation, Constants.SiteExtensionOperationInstall, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(armSettings.ProvisioningState, Constants.SiteExtensionProvisioningStateSucceeded, StringComparison.OrdinalIgnoreCase))
+                    batchUpdateLock.LockOperation(() =>
                     {
-                        try
+                        string[] packageDirs = FileSystemHelpers.GetDirectories(_environment.SiteExtensionSettingsPath);
+                        foreach (var dir in packageDirs)
                         {
-                            armSettings.Operation = null;
-                            isAnyUpdate = true;
+                            var dirInfo = new DirectoryInfo(dir);   // arm setting folder name is same as package id
+                            SiteExtensionStatus armSettings = new SiteExtensionStatus(_environment.SiteExtensionSettingsPath, dirInfo.Name, tracer);
+                            if (string.Equals(armSettings.Operation, Constants.SiteExtensionOperationInstall, StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(armSettings.ProvisioningState, Constants.SiteExtensionProvisioningStateSucceeded, StringComparison.OrdinalIgnoreCase))
+                            {
+                                try
+                                {
+                                    armSettings.Operation = null;
+                                    isAnyUpdate = true;
+                                    tracer.Trace("Updated {0}", dir);
+                                }
+                                catch (Exception ex)
+                                {
+                                    tracer.TraceError(ex);
+                                    // no-op
+                                }
+                            }
                         }
-                        catch (Exception ex)
-                        {
-                            tracer.TraceError(ex);
-                            // no-op
-                        }
+
+                    }, "Updating SiteExtension success status", TimeSpan.FromSeconds(5));
+
+                    return isAnyUpdate;
+                }
+                catch (LockOperationException)
+                {
+                    return false;
+                }
+            }
+        }
+
+        private bool IsInstallationLockHeldSafeCheck(string id)
+        {
+            SiteExtensionInstallationLock installationLock = null;
+            try
+            {
+                installationLock = SiteExtensionInstallationLock.CreateLock(_environment.SiteExtensionSettingsPath, id);
+                return installationLock.IsHeld;
+            }
+            finally
+            {
+                if (installationLock != null)
+                {
+                    installationLock.Release();
+                }
+            }
+        }
+
+        private async Task<T> ThrowsConflictIfIOException<T>(Task<T> task)
+        {
+            try
+            {
+                return await task;
+            }
+            catch (IOException ex)
+            {
+                // Simplify the exception handler by converting any IOException 
+                // to 409 Conflict instead of 500 InternalServerError (implying server issue).
+                throw new HttpResponseException(Request.CreateErrorResponse(HttpStatusCode.Conflict, ex));
+            }
+        }
+
+        private void ValidatePackageUri(string id, SiteExtensionInfo info, ITracer tracer)
+        {
+            if (string.IsNullOrEmpty(info.PackageUri))
+            {
+                return;
+            }
+
+            if (Uri.TryCreate(info.PackageUri, UriKind.Absolute, out Uri packageUri))
+            {
+                var nupkgFileName = Path.GetFileName(packageUri.LocalPath);
+                if (!string.IsNullOrEmpty(nupkgFileName) && string.Equals(".nupkg", Path.GetExtension(nupkgFileName), StringComparison.OrdinalIgnoreCase))
+                {
+                    var fileName = Path.GetFileNameWithoutExtension(nupkgFileName);
+                    if (fileName.StartsWith($"{id}.", StringComparison.OrdinalIgnoreCase)
+                        && SemanticVersion.TryParse(fileName.Substring(id.Length + 1), out SemanticVersion version))
+                    {
+                        info.Id = id;
+                        info.Version = version.ToString();
+                        return;
                     }
                 }
+            }
 
-            }, TimeSpan.FromSeconds(5));
-
-            return islocked && isAnyUpdate;
+            var message = $"'{info.PackageUri}' is not a valid nupkg uri!";
+            tracer.Trace(message);
+            throw new HttpResponseException(Request.CreateErrorResponse(HttpStatusCode.BadRequest, message));
         }
     }
 }

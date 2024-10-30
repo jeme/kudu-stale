@@ -8,12 +8,15 @@ using System.Runtime.InteropServices;
 using System.Security;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Kudu.Contracts.Tracing;
 using Kudu.Core.Deployment;
+using Kudu.Core.Helpers;
 using Kudu.Core.Tracing;
 using Microsoft.Win32.SafeHandles;
+using static Kudu.Core.Infrastructure.MiniDumpNativeMethods;
 
 namespace Kudu.Core.Infrastructure
 {
@@ -23,38 +26,14 @@ namespace Kudu.Core.Infrastructure
     {
         internal static TimeSpan StandardOutputDrainTimeout = TimeSpan.FromSeconds(5);
 
-        private const string GCDump32Exe = @"%ProgramFiles(x86)%\vsdiagagent\x86\GCDump32.exe";
-        private const string GCDump64Exe = @"%ProgramFiles(x86)%\vsdiagagent\x64\GCDump64.exe";
-
         private readonly static Lazy<string> _clrRuntimeDirectory = new Lazy<string>(() =>
         {
             return RuntimeEnvironment.GetRuntimeDirectory();
         });
 
-        private readonly static Lazy<string> _gcDumpExe = new Lazy<string>(() =>
-        {
-            string gcDumpExe = System.Environment.ExpandEnvironmentVariables(GCDump32Exe);
-            if (ClrRuntimeDirectory.IndexOf(@"\Framework64\", StringComparison.OrdinalIgnoreCase) > 0)
-            {
-                gcDumpExe = System.Environment.ExpandEnvironmentVariables(GCDump64Exe);
-            }
-
-            return gcDumpExe;
-        });
-
-        private readonly static Lazy<bool> _supportGCDump = new Lazy<bool>(() =>
-        {
-            return File.Exists(_gcDumpExe.Value);
-        });
-
         public static string ClrRuntimeDirectory
         {
             get { return _clrRuntimeDirectory.Value; }
-        }
-
-        public static bool SupportGCDump
-        {
-            get { return _supportGCDump.Value; }
         }
 
         public static void Kill(this Process process, bool includesChildren, ITracer tracer)
@@ -133,15 +112,20 @@ namespace Kudu.Core.Infrastructure
         /// </summary>
         public static Process GetParentProcess(this Process process, ITracer tracer)
         {
-            IntPtr processHandle;
-            if (!process.TryGetProcessHandle(out processHandle))
-            {
-                return null;
-            }
-
-            var pbi = new ProcessNativeMethods.ProcessInformation();
             try
             {
+                if (!OSDetector.IsOnWindows())
+                {
+                    return process.GetParentProcessLinux(tracer);
+                }
+
+                IntPtr processHandle;
+                if (!process.TryGetProcessHandle(out processHandle))
+                {
+                    return null;
+                }
+
+                var pbi = new ProcessNativeMethods.ProcessInformation();
                 int returnLength;
                 int status = ProcessNativeMethods.NtQueryInformationProcess(processHandle, 0, ref pbi, Marshal.SizeOf(pbi), out returnLength);
                 if (status != 0)
@@ -153,12 +137,41 @@ namespace Kudu.Core.Infrastructure
             }
             catch (Exception ex)
             {
-                if (!process.ProcessName.Equals("w3wp", StringComparison.OrdinalIgnoreCase))
+                var processName = process.SafeGetProcessName() ?? "(null)";
+                if (!processName.Equals("w3wp", StringComparison.OrdinalIgnoreCase))
                 {
-                    tracer.Trace("GetParentProcess of {0}({1}) failed with {2}", process.ProcessName, process.Id, ex);
+                    tracer.TraceError(ex, "GetParentProcess of {0}({1}) failed.", processName, process.Id);
                 }
                 return null;
             }
+        }
+
+        // http://stackoverflow.com/questions/2509406/c-mono-get-list-of-child-processes-on-windows-and-linux
+        public static Process GetParentProcessLinux(this Process process, ITracer tracer)
+        {
+            try
+            {
+                var procPath = "/proc/" + process.Id + "/stat";
+
+                var lines = File.ReadLines("/proc/" + process.Id + "/stat");
+                var match = Regex.Match(lines.First(), @"\d+\s+\((.*?)\)\s+\w+\s+(\d+)\s");
+
+                if (match.Success)
+                {
+                    var ppid = Int32.Parse(match.Groups[2].Value);
+                    return ppid < 1 ? null : Process.GetProcessById(ppid);
+                }
+                tracer.TraceError("GetParentProcessLinux: Invalid proc stat format: " + procPath);
+            }
+            catch(FileNotFoundException)
+            {
+                tracer.TraceError("Could not find process with PID=" + process.Id);
+            }
+            catch(Exception ex)
+            {
+                tracer.TraceError(ex, "GetParentProcessLinux ({0}) failed.", process.Id);
+            }
+            return null;
         }
 
         /// <summary>
@@ -174,17 +187,52 @@ namespace Kudu.Core.Infrastructure
         {
             using (var fs = new FileStream(dumpFile, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
             {
-                if (!MiniDumpNativeMethods.MiniDumpWriteDump(process.Handle, (uint)process.Id, fs.SafeFileHandle, dumpType, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero))
+                if (!MiniDumpWriteDump(process.Handle, (uint)process.Id, fs.SafeFileHandle, dumpType, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero))
                 {
                     throw new Win32Exception(Marshal.GetLastWin32Error());
                 }
             }
         }
 
-        public static void GCDump(this Process process, string dumpFile, string resourcePath, int maxDumpCountK, ITracer tracer, TimeSpan idleTimeout)
+        public static void SnapshotAndDump(this Process process, string dumpFile, MINIDUMP_TYPE dumpType)
         {
-            var exe = new Executable(_gcDumpExe.Value, Path.GetDirectoryName(dumpFile), idleTimeout);
-            exe.Execute(tracer, "\"{0}\" \"{1}\" \"{2}\" \"{3}\"", process.Id, dumpFile, resourcePath, maxDumpCountK);  
+            using (var fs = new FileStream(dumpFile, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+            {
+                using (var pssSnapshot = PssSnapshotSafeHandle.CaptureSnapshot(process.Handle))
+                {
+                    bool PssSnapshotMinidumpCallback(IntPtr unused, ref MINIDUMP_CALLBACK_INPUT input, ref MINIDUMP_CALLBACK_OUTPUT output)
+                    {
+                        const int S_OK = 0;
+                        const int S_FALSE = 1;
+
+                        switch (input.CallbackType)
+                        {
+                            case MINIDUMP_CALLBACK_TYPE.IsProcessSnapshotCallback:
+                                // The target is always a snapshot.
+                                output.Status = S_FALSE;
+                                break;
+
+                            case MINIDUMP_CALLBACK_TYPE.ReadMemoryFailureCallback:
+                                // Ignore any read failures during dump generation.
+                                output.Status = S_OK;
+                                break;
+                        }
+
+                        return true;
+                    }
+
+                    var callbackParam = new MINIDUMP_CALLBACK_INFORMATION
+                    {
+                        CallbackParam = IntPtr.Zero,
+                        CallbackRoutine = PssSnapshotMinidumpCallback
+                    };
+
+                    if (!MiniDumpWriteDump(pssSnapshot, (uint)process.Id, fs.SafeFileHandle, dumpType | MINIDUMP_TYPE.IgnoreInaccessibleMemory, IntPtr.Zero, IntPtr.Zero, ref callbackParam))
+                    {
+                        throw new Win32Exception(Marshal.GetLastWin32Error());
+                    }
+                }
+            }
         }
 
         public static async Task<int> Start(this IProcess process, ITracer tracer, Stream output, Stream error, Stream input = null, IdleManager idleManager = null)
@@ -274,7 +322,14 @@ namespace Kudu.Core.Infrastructure
 
         public static bool GetIsScmSite(Dictionary<string, string> environment)
         {
-            return environment[WellKnownEnvironmentVariables.ApplicationPoolId].StartsWith("~1", StringComparison.OrdinalIgnoreCase);
+            string appPool = null;
+            if (environment.TryGetValue(WellKnownEnvironmentVariables.ApplicationPoolId, out appPool) &&
+                !string.IsNullOrEmpty(appPool))
+            {
+                return appPool.StartsWith("~1", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return false;
         }
 
         public static bool GetIsWebJob(Dictionary<string, string> environment)
@@ -285,7 +340,16 @@ namespace Kudu.Core.Infrastructure
         public static string GetDescription(Dictionary<string, string> environment)
         {
             const string webJobTemplate = "WebJob: {0}, Type: {1}";
-            return String.Format(webJobTemplate, environment[WellKnownEnvironmentVariables.WebJobsName], environment[WellKnownEnvironmentVariables.WebJobsType]);
+
+            string webJobName = null;
+            string webJobType = null;
+            if (environment.TryGetValue(WellKnownEnvironmentVariables.WebJobsName, out webJobName) &&
+                environment.TryGetValue(WellKnownEnvironmentVariables.WebJobsType, out webJobType))
+            {
+                return String.Format(webJobTemplate, webJobName, webJobType);
+            }
+
+            return null;
         }
 
         private static bool TryGetProcessHandle(this Process process, out IntPtr processHandle)
@@ -298,7 +362,7 @@ namespace Kudu.Core.Infrastructure
             }
             catch (Win32Exception ex)
             {
-                if (ex.NativeErrorCode != 5)
+                if (!process.HasExited && ex.NativeErrorCode != 5)
                 {
                     throw;
                 }
@@ -307,6 +371,19 @@ namespace Kudu.Core.Infrastructure
             }
 
             return processHandle != IntPtr.Zero;
+        }
+
+        private static string SafeGetProcessName(this Process process)
+        {
+            try
+            {
+                return process.ProcessName;
+            }
+            catch(InvalidOperationException)
+            {
+                // The process has already exited
+                return null;
+            }
         }
 
         private static async Task CopyStreamAsync(Stream from, Stream to, IdleManager idleManager, CancellationToken cancellationToken, bool closeAfterCopy = false)
@@ -344,7 +421,7 @@ namespace Kudu.Core.Infrastructure
                 var stdio = Task.WhenAll(tasks);
                 var completed = await Task.WhenAny(stdio, delay);
 
-                // if delay commpleted first (meaning timeout), check if activity and continue to wait
+                // if delay completed first (meaning timeout), check if activity and continue to wait
                 if (completed == delay)
                 {
                     var lastActivity = idleManager.LastActivity;
@@ -363,7 +440,6 @@ namespace Kudu.Core.Infrastructure
                 // we force close all streams
                 if (completed == delay)
                 {
-                    // TODO, suwatch: MDS Kudu SiteExtension
                     using (tracer.Step("Flush stdio and stderr have no activity within given time"))
                     {
                         bool exited = process.HasExited;
@@ -436,8 +512,7 @@ namespace Kudu.Core.Infrastructure
                 Process parent = proc.GetParentProcess(tracer);
                 if (parent != null)
                 {
-                    List<int> children = null;
-                    if (!tree.TryGetValue(parent.Id, out children))
+                    if (!tree.TryGetValue(parent.Id, out var children))
                     {
                         tree[parent.Id] = children = new List<int>();
                     }
@@ -459,7 +534,8 @@ namespace Kudu.Core.Infrastructure
                 throw new Win32Exception("Unable to read environment block.");
             }
 
-            const int maxEnvSize = 32767;
+            // Limit env size to 10 MB to be defensive
+            const int maxEnvSize = 10 * 1000 * 1000;
             if (dataSize > maxEnvSize)
             {
                 dataSize = maxEnvSize;
@@ -563,37 +639,17 @@ namespace Kudu.Core.Infrastructure
                 }
             }
 
-            char[] environmentCharArray = Encoding.Unicode.GetChars(env, 0, len);
-
-            for (int i = 0; i < environmentCharArray.Length; i++)
+            // envs are key=value pair separated by '\0'
+            var envs = Encoding.Unicode.GetString(env, 0, len).Split('\0');
+            var separators = new[] { '=' };
+            for (int i = 0; i < envs.Length; i++)
             {
-                int startIndex = i;
-                while ((environmentCharArray[i] != '=') && (environmentCharArray[i] != '\0'))
+                var pair = envs[i].Split(separators, 2);
+                if (pair.Length != 2)
                 {
-                    i++;
+                    continue;
                 }
-                if (environmentCharArray[i] != '\0')
-                {
-                    if ((i - startIndex) == 0)
-                    {
-                        while (environmentCharArray[i] != '\0')
-                        {
-                            i++;
-                        }
-                    }
-                    else
-                    {
-                        string str = new string(environmentCharArray, startIndex, i - startIndex);
-                        i++;
-                        int num3 = i;
-                        while (environmentCharArray[i] != '\0')
-                        {
-                            i++;
-                        }
-                        string str2 = new string(environmentCharArray, num3, i - num3);
-                        result[str] = str2;
-                    }
-                }
+                result[pair[0]] = pair[1];
             }
 
             return result;
@@ -904,6 +960,22 @@ namespace Kudu.Core.Infrastructure
                 public ushort MaximumLength;
                 public int Buffer;
             }
+
+            [DllImport("kernel32")]
+            public static extern uint GetProcessId(IntPtr hProcess);
+
+            [DllImport("kernel32", SetLastError = true)]
+            public static extern IntPtr OpenProcess(uint dwDesiredAccess, [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, uint dwProcessId);
+
+            [DllImport("kernel32", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            public static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+            [DllImport("kernel32", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            public static extern bool CloseHandle(IntPtr handle);
+
+            public const uint PROCESS_TERMINATE = 0x0001;
         }
     }
 }

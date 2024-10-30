@@ -1,16 +1,15 @@
 ﻿using System;
-using System.Globalization;
 using System.IO;
-using System.IO.Abstractions;
 using Kudu.Contracts.Infrastructure;
 using Kudu.Core.Infrastructure;
+using Kudu.Core.Settings;
 using Kudu.Core.Tracing;
 
 namespace Kudu.Core.Deployment
 {
     public class DeploymentStatusManager : IDeploymentStatusManager
     {
-        public static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(60);
+        public static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(10);
         private readonly IEnvironment _environment;
         private readonly IAnalytics _analytics;
         private readonly IOperationLock _statusLock;
@@ -40,7 +39,7 @@ namespace Kudu.Core.Deployment
         {
             string path = Path.Combine(_environment.DeploymentsPath, id);
 
-            _statusLock.LockOperation(() =>
+            _statusLock.LockOperationWithRetry(() =>
             {
                 FileSystemHelpers.DeleteDirectorySafe(path, ignoreErrors: true);
 
@@ -53,7 +52,7 @@ namespace Kudu.Core.Deployment
                 {
                     FileSystemHelpers.WriteAllText(_activeFile, String.Empty);
                 }
-            }, LockTimeout);
+            }, "Deleting deployment", LockTimeout);
         }
 
         public IOperationLock Lock
@@ -65,6 +64,20 @@ namespace Kudu.Core.Deployment
         {
             get
             {
+                // this is to let us roll out change disabled by default
+                if (ScmHostingConfigurations.DeploymentStatusCompleteFileEnabled)
+                {
+                    return _statusLock.LockOperationIfNeccessary(() =>
+                    {
+                        if (FileSystemHelpers.FileExists(_activeFile))
+                        {
+                            return FileSystemCache.ReadAllText(_activeFile);
+                        }
+
+                        return null;
+                    }, "Getting active deployment id", LockTimeout);
+                }
+
                 return _statusLock.LockOperation(() =>
                 {
                     if (FileSystemHelpers.FileExists(_activeFile))
@@ -73,11 +86,12 @@ namespace Kudu.Core.Deployment
                     }
 
                     return null;
-                }, LockTimeout);
+                }, "Getting active deployment id", LockTimeout);
+
             }
             set
             {
-                _statusLock.LockOperation(() => FileSystemHelpers.WriteAllText(_activeFile, value), LockTimeout);
+                _statusLock.LockOperationWithRetry(() => FileSystemHelpers.WriteAllText(_activeFile, value), "Updating active deployment id", LockTimeout);
             }
         }
 
@@ -86,6 +100,22 @@ namespace Kudu.Core.Deployment
         {
             get
             {
+                // this is to let us roll out change disabled by default
+                if (ScmHostingConfigurations.DeploymentStatusCompleteFileEnabled)
+                {
+                    return _statusLock.LockOperationIfNeccessary(() =>
+                    {
+                        if (FileSystemHelpers.FileExists(_activeFile))
+                        {
+                            return FileSystemHelpers.GetLastWriteTimeUtc(_activeFile);
+                        }
+                        else
+                        {
+                            return DateTime.MinValue;
+                        }
+                    }, "Getting last deployment modified time", LockTimeout);
+                }
+
                 return _statusLock.LockOperation(() =>
                 {
                     if (FileSystemHelpers.FileExists(_activeFile))
@@ -96,7 +126,7 @@ namespace Kudu.Core.Deployment
                     {
                         return DateTime.MinValue;
                     }
-                }, LockTimeout);
+                }, "Getting last deployment modified time", LockTimeout);
             }
         }
     }

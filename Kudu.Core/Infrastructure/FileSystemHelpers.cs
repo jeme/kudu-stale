@@ -1,19 +1,67 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.IO.Abstractions;
 using System.Linq;
+using System.Threading.Tasks;
+using Kudu.Core.Helpers;
+using Kudu.Core.Settings;
+using Kudu.Core.Tracing;
 
 namespace Kudu.Core.Infrastructure
 {
+    internal class DataCopiedTracer
+    {
+        private int _numDirectoriesCreated;
+        private int _numFilesCopied;
+        private long _totalBytesCopied;
+
+        public DataCopiedTracer()
+        {
+            _numDirectoriesCreated = 0;
+            _numFilesCopied = 0;
+            _totalBytesCopied = 0;
+        }
+
+        public DataCopiedTracer(int numDirectoriesCreated, int numFilesCopied, long totalBytesCopied)
+        {
+            _numDirectoriesCreated = numDirectoriesCreated;
+            _numFilesCopied = numFilesCopied;
+            _totalBytesCopied = totalBytesCopied;
+        }
+
+        public int NumDirectoriesCreated
+        {
+            get { return _numDirectoriesCreated; }
+            set { _numDirectoriesCreated = value; }
+        }
+
+        public int NumFilesCopied
+        {
+            get { return _numFilesCopied; }
+            set { _numFilesCopied = value; }
+        }
+
+        public long TotalBytesCopied
+        {
+            get { return _totalBytesCopied; }
+            set { _totalBytesCopied = value; }
+        }
+    }
     public static class FileSystemHelpers
     {
-        public static IFileSystem Instance { get; set; }
+        [SuppressMessage("Microsoft.Usage", "CA2211:Non-constant fields should not be visible", Justification = "Make accessable for testing")]
+        public static string TmpFolder = System.Environment.ExpandEnvironmentVariables(@"%WEBROOT_PATH%\data\Temp");
 
-        static FileSystemHelpers()
+        private static IFileSystem _default = new FileSystem();
+        private static IFileSystem _instance;
+
+        public static IFileSystem Instance
         {
-            Instance = new FileSystem();
+            get { return _instance ?? _default; }
+            set { _instance = value; }
         }
 
         public static Stream CreateFile(string path)
@@ -35,6 +83,43 @@ namespace Kudu.Core.Infrastructure
             return path;
         }
 
+        public static string EnsureDirectoryIgnoreAccessExceptions(string path)
+        {
+            try
+            {
+                return EnsureDirectory(path);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return path;
+            }
+        }
+
+        public static void MoveDirectory(string sourceDirName, string destDirName)
+        {
+            // Instance.Directory.Move will result in access denied sometime. Do it ourself!
+
+            EnsureDirectory(destDirName);
+
+            string[] files = Instance.Directory.GetFiles(sourceDirName);
+            string[] dirs = Instance.Directory.GetDirectories(sourceDirName);
+
+            foreach (var filePath in files)
+            {
+                var fi = new FileInfo(filePath);
+                MoveFile(filePath, Path.Combine(destDirName, fi.Name));
+            }
+
+            foreach (var dirPath in dirs)
+            {
+                var di = new DirectoryInfo(dirPath);
+                MoveDirectory(dirPath, Path.Combine(destDirName, di.Name));
+                Instance.Directory.Delete(dirPath, false);
+            }
+
+            Instance.Directory.Delete(sourceDirName, false);
+        }
+
         public static bool FileExists(string path)
         {
             return Instance.File.Exists(path);
@@ -48,8 +133,8 @@ namespace Kudu.Core.Infrastructure
         public static bool IsSubfolder(string parent, string child)
         {
             // normalize
-            string parentPath = Path.GetFullPath(parent).TrimEnd('\\') + '\\';
-            string childPath = Path.GetFullPath(child).TrimEnd('\\') + '\\';
+            string parentPath = Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string childPath = Path.GetFullPath(child).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             return childPath.StartsWith(parentPath, StringComparison.OrdinalIgnoreCase);
         }
 
@@ -68,6 +153,11 @@ namespace Kudu.Core.Infrastructure
             return Instance.File.ReadAllText(path);
         }
 
+        public static string[] ReadAllLines(string path)
+        {
+            return Instance.File.ReadAllLines(path);
+        }
+
         /// <summary>
         /// Replaces File.ReadAllText,
         /// Will do the same thing only this can work on files that are already open (and share read/write).
@@ -78,6 +168,18 @@ namespace Kudu.Core.Infrastructure
             {
                 var streamReader = new StreamReader(fileStream);
                 return streamReader.ReadToEnd();
+            }
+        }
+
+        /// <summary>
+        /// Async version of ReadAllTextFromFile,
+        /// </summary>
+        public static async Task<string> ReadAllTextFromFileAsync(string path)
+        {
+            using (var fileStream = OpenFile(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var streamReader = new StreamReader(fileStream))
+            {
+                return await streamReader.ReadToEndAsync();
             }
         }
 
@@ -115,6 +217,19 @@ namespace Kudu.Core.Infrastructure
         }
 
         /// <summary>
+        /// Async version of WriteAllTextToFile,
+        /// </summary>
+        public static async Task WriteAllTextToFileAsync(string path, string content)
+        {
+            using (var fileStream = OpenFile(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+            using (var streamWriter = new StreamWriter(fileStream))
+            {
+                await streamWriter.WriteAsync(content);
+                await streamWriter.FlushAsync();
+            }
+        }
+
+        /// <summary>
         /// Replaces File.AppendAllText,
         /// Will do the same thing only this can work on files that are already open (and share read/write).
         /// </summary>
@@ -142,6 +257,35 @@ namespace Kudu.Core.Infrastructure
         // From MSDN: http://msdn.microsoft.com/en-us/library/bb762914.aspx
         public static void CopyDirectoryRecursive(string sourceDirPath, string destinationDirPath, bool overwrite = true)
         {
+            if (ScmHostingConfigurations.DataCopyingTelemetryEnabled)
+            {
+                DataCopiedTracer dataCopiedTracer = new DataCopiedTracer();
+
+                int startTick = System.Environment.TickCount;
+                CopyDirectoryRecursiveInternal(sourceDirPath, destinationDirPath, overwrite, dataCopiedTracer);
+                int elapsedTime = System.Environment.TickCount - startTick;
+
+                KuduEventSource.Log.GenericEvent(ServerConfiguration.GetRuntimeSiteName(),
+                    string.Format("Directories created: {0}, Files copied: {1}, Bytes copied: {2}, Time elapsed (ms): {3}",
+                                dataCopiedTracer.NumDirectoriesCreated,
+                                dataCopiedTracer.NumFilesCopied,
+                                dataCopiedTracer.TotalBytesCopied,
+                                elapsedTime),
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    EnvironmentHelper.KuduVersion.Value,
+                    EnvironmentHelper.AppServiceVersion.Value);
+            }
+            else
+            {
+                CopyDirectoryRecursiveInternal(sourceDirPath, destinationDirPath, overwrite);
+            }
+        }
+
+        // From MSDN: http://msdn.microsoft.com/en-us/library/bb762914.aspx
+        private static void CopyDirectoryRecursiveInternal(string sourceDirPath, string destinationDirPath, bool overwrite = true, DataCopiedTracer dataCopiedTracer = null)
+        {
             // Get the subdirectories for the specified directory.
             var sourceDir = new DirectoryInfo(sourceDirPath);
 
@@ -156,6 +300,11 @@ namespace Kudu.Core.Infrastructure
             if (!DirectoryExists(destinationDirPath))
             {
                 CreateDirectory(destinationDirPath);
+
+                if (ScmHostingConfigurations.DataCopyingTelemetryEnabled && dataCopiedTracer != null)
+                {
+                    dataCopiedTracer.NumDirectoriesCreated++;
+                }
             }
 
             // Get the files in the directory and copy them to the new location.
@@ -166,6 +315,12 @@ namespace Kudu.Core.Infrastructure
                 {
                     string destinationFilePath = Path.Combine(destinationDirPath, sourceFile.Name);
                     Instance.File.Copy(sourceFile.FullName, destinationFilePath, overwrite);
+
+                    if (ScmHostingConfigurations.DataCopyingTelemetryEnabled && dataCopiedTracer != null)
+                    {
+                        dataCopiedTracer.NumFilesCopied++;
+                        dataCopiedTracer.TotalBytesCopied += sourceFile.Length;
+                    }
                 }
                 else
                 {
@@ -174,7 +329,7 @@ namespace Kudu.Core.Infrastructure
                     {
                         // Copy sub-directories and their contents to new location.
                         string destinationSubDirPath = Path.Combine(destinationDirPath, sourceSubDir.Name);
-                        CopyDirectoryRecursive(sourceSubDir.FullName, destinationSubDirPath, overwrite);
+                        CopyDirectoryRecursiveInternal(sourceSubDir.FullName, destinationSubDirPath, overwrite, dataCopiedTracer);
                     }
                 }
             }
@@ -183,6 +338,16 @@ namespace Kudu.Core.Infrastructure
         public static void SetLastWriteTimeUtc(string path, DateTime lastWriteTimeUtc)
         {
             Instance.File.SetLastWriteTimeUtc(path, lastWriteTimeUtc);
+        }
+
+        public static DateTime GetDirectoryLastWriteTimeUtc(string path)
+        {
+            return Instance.Directory.GetLastWriteTimeUtc(path);
+        }
+
+        public static void SetDirectoryLastWriteTimeUtc(string path, DateTime lastWriteTimeUtc)
+        {
+            Instance.Directory.SetLastWriteTimeUtc(path, lastWriteTimeUtc);
         }
 
         public static FileInfoBase FileInfoFromFileName(string fileName)
@@ -210,9 +375,19 @@ namespace Kudu.Core.Infrastructure
             return Instance.Directory.GetDirectories(path);
         }
 
+        public static string[] GetDirectoryNames(string path)
+        {
+            return Instance.Directory.GetDirectories(path).Select(p => Path.GetFileName(p)).ToArray();
+        }
+
         public static string[] GetFiles(string path, string pattern)
         {
             return Instance.Directory.GetFiles(path, pattern);
+        }
+
+        public static string[] GetFiles(string path, string pattern, SearchOption searchOption)
+        {
+            return Instance.Directory.GetFiles(path, pattern, searchOption);
         }
 
         public static IEnumerable<string> ListFiles(string path, SearchOption searchOption, params string[] lookupList)
@@ -253,6 +428,32 @@ namespace Kudu.Core.Infrastructure
         public static void DeleteDirectoryContentsSafe(string path, bool ignoreErrors = true)
         {
             DeleteDirectoryContentsSafe(Instance.DirectoryInfo.FromDirectoryName(path), ignoreErrors);
+        }
+
+        public static bool IsFileSystemReadOnly()
+        {
+            if (!Environment.IsAzureEnvironment())
+            {
+                // if not azure, it should be writable
+                return false;
+            }
+
+            try
+            {
+                string folder = Path.Combine(TmpFolder, Guid.NewGuid().ToString());
+                CreateDirectory(folder);
+                DeleteDirectorySafe(folder, ignoreErrors: false);
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return true;
+            }
+        }
+
+        public static string GetDirectoryName(string path)
+        {
+            return Instance.Path.GetDirectoryName(path);
         }
 
         private static void DeleteDirectoryContentsSafe(DirectoryInfoBase directoryInfo, bool ignoreErrors)

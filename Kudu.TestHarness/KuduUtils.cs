@@ -3,8 +3,10 @@ using System.Configuration;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Xml.Linq;
 using Kudu.Client.Infrastructure;
+using Kudu.Core.Infrastructure;
 
 namespace Kudu.TestHarness
 {
@@ -18,7 +20,7 @@ namespace Kudu.TestHarness
 
                 var clientHandler = HttpClientHelper.CreateClientHandler(serviceUrl, credentials);
                 var client = new HttpClient(clientHandler);
-                var result = client.GetAsync(serviceUrl + "dump").Result;
+                var result = client.GetAsync(serviceUrl + "api/dump").Result;
                 if (result.IsSuccessStatusCode)
                 {
                     using (Stream stream = result.Content.ReadAsStreamAsync().Result)
@@ -33,6 +35,21 @@ namespace Kudu.TestHarness
             catch (Exception ex)
             {
                 TestTracer.Trace("Failed to download dump - {0}", ex.GetBaseException().Message);
+            }
+        }
+
+        public static void KillKuduProcess(string serviceUrl, NetworkCredential credentials = null)
+        {
+            try
+            {
+                var clientHandler = HttpClientHelper.CreateClientHandler(serviceUrl, credentials);
+                var client = new HttpClient(clientHandler);
+                client.PostAsync(serviceUrl + "api/processes/0/kill", new StringContent(string.Empty, Encoding.UTF8, "text/plain")).Wait();
+                //client.DeleteAsync(serviceUrl + "api/processes/0").Wait();
+            }
+            catch (Exception)
+            {
+                // no-op
             }
         }
 
@@ -79,6 +96,30 @@ namespace Kudu.TestHarness
                 return GetBooleanTestSetting("StopAfterFirstTestFailure");
             }
         }
+        
+        public static string CustomKuduUrl
+        {
+            get
+            {
+                return GetTestSetting("CustomKuduUrl");
+            }
+        }
+
+        public static bool RunningAgainstLinuxKudu
+        {
+            get
+            {
+                return GetBooleanTestSetting("RunningAgainstLinuxKudu");
+            }
+        }
+
+        public static bool DisableRetry
+        {
+            get
+            {
+                return GetBooleanTestSetting("DisableRetry");
+            }
+        }
 
         public static bool GetBooleanTestSetting(string settingName)
         {
@@ -104,6 +145,12 @@ namespace Kudu.TestHarness
             {
                 return ConfigurationManager.AppSettings[settingName];
             }
+        }
+
+        public static IDisposable MockAzureEnvironment()
+        {
+            Environment.SetEnvironmentVariable("WEBSITE_INSTANCE_ID", "1234");
+            return new DisposableAction(() => Environment.SetEnvironmentVariable("WEBSITE_INSTANCE_ID", null));
         }
     }
 }

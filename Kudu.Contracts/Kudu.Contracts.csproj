@@ -1,5 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project ToolsVersion="12.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\packages\Microsoft.CodeAnalysis.Analyzers.2.9.8\build\Microsoft.CodeAnalysis.Analyzers.props" Condition="Exists('..\packages\Microsoft.CodeAnalysis.Analyzers.2.9.8\build\Microsoft.CodeAnalysis.Analyzers.props')" />
   <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory),Kudu.sln))\Build\Kudu.targets" />
   <PropertyGroup>
     <ProjectGuid>{EC0ED988-2C60-4F31-A434-645E048BFD95}</ProjectGuid>
@@ -7,15 +8,20 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>Kudu.Contracts</RootNamespace>
     <AssemblyName>Kudu.Contracts</AssemblyName>
+    <TargetFrameworkVersion>v4.5.2</TargetFrameworkVersion>
+    <TargetFrameworkProfile />
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisMode>AllEnabledByDefault</AnalysisMode>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Microsoft.Web.XmlTransform, Version=2.1.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\packages\Microsoft.Web.Xdt.2.1.1\lib\net40\Microsoft.Web.XmlTransform.dll</HintPath>
     </Reference>
-    <Reference Include="Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\packages\Newtonsoft.Json.6.0.6\lib\net45\Newtonsoft.Json.dll</HintPath>
+    <Reference Include="Newtonsoft.Json, Version=9.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
+      <HintPath>..\packages\Newtonsoft.Json.9.0.1\lib\net45\Newtonsoft.Json.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="NuGet.Client, Version=3.0.0.0, Culture=neutral, PublicKeyToken=2e465378e3b1a8dd, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
@@ -76,6 +82,7 @@
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.IO.Compression" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Net.Http.Extensions">
       <HintPath>..\packages\Microsoft.Net.Http.2.2.29\lib\net45\System.Net.Http.Extensions.dll</HintPath>
@@ -84,6 +91,7 @@
       <HintPath>..\packages\Microsoft.Net.Http.2.2.29\lib\net45\System.Net.Http.Primitives.dll</HintPath>
     </Reference>
     <Reference Include="System.Net.Http.WebRequest" />
+    <Reference Include="System.Xml.Linq" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Common\CommonAssemblyInfo.cs">
@@ -96,24 +104,39 @@
     <Compile Include="Commands\CommandEventType.cs" />
     <Compile Include="Commands\CommandResult.cs" />
     <Compile Include="Commands\ICommandExecutor.cs" />
+    <Compile Include="Deployment\ArtifactType.cs" />
     <Compile Include="Deployment\DeploymentFailedException.cs" />
+    <Compile Include="Deployment\DeploymentInfoBase.cs" />
     <Compile Include="Deployment\DeployResult.cs" />
     <Compile Include="Deployment\DeployStatus.cs" />
-    <Compile Include="Deployment\IAutoSwapHandler.cs" />
+    <Compile Include="Deployment\DeployStatusApiResult.cs" />
+    <Compile Include="Deployment\FetchDeploymentRequestResult.cs" />
     <Compile Include="Deployment\IDeploymentEnvironment.cs" />
     <Compile Include="Deployment\IDeploymentManager.cs" />
     <Compile Include="Deployment\IDeploymentManagerFactory.cs" />
     <Compile Include="Deployment\IDeploymentStatusManager.cs" />
     <Compile Include="Deployment\IDeploymentStatusFile.cs" />
+    <Compile Include="Deployment\IDetailedLogger.cs" />
+    <Compile Include="Deployment\IFetchDeploymentManager.cs" />
     <Compile Include="Deployment\ILogger.cs" />
     <Compile Include="Deployment\LogEntry.cs" />
     <Compile Include="Deployment\LogEntryType.cs" />
     <Compile Include="Diagnostics\ApplicationLogEntry.cs" />
+    <Compile Include="Diagnostics\DotNetCoreSharedFrameworksInfo.cs" />
     <Compile Include="Diagnostics\ProcessInfo.cs" />
+    <Compile Include="Diagnostics\ProcessEnvironmentInfo.cs" />
     <Compile Include="Diagnostics\ProcessModuleInfo.cs" />
     <Compile Include="Diagnostics\ProcessThreadInfo.cs" />
     <Compile Include="Diagnostics\RuntimeInfo.cs" />
     <Compile Include="Editor\VfsStatEntry.cs" />
+    <Compile Include="Functions\FunctionSecrets.cs" />
+    <Compile Include="Functions\FunctionEnvelope.cs" />
+    <Compile Include="Functions\FunctionSecretsJsonOps.cs" />
+    <Compile Include="Functions\FunctionTestData.cs" />
+    <Compile Include="Functions\IFunctionManager.cs" />
+    <Compile Include="Functions\IKeyJsonOps.cs" />
+    <Compile Include="Functions\MasterKey.cs" />
+    <Compile Include="Functions\MasterKeyJsonOps.cs" />
     <Compile Include="HashHelpers.cs" />
     <Compile Include="Hooks\ConflictException.cs" />
     <Compile Include="Hooks\WebHook.cs" />
@@ -122,6 +145,7 @@
     <Compile Include="IEnvironment.cs" />
     <Compile Include="Infrastructure\INamedObject.cs" />
     <Compile Include="Infrastructure\IOperationLock.cs" />
+    <Compile Include="Infrastructure\OperationLockInfo.cs" />
     <Compile Include="Infrastructure\LockExtensions.cs" />
     <Compile Include="Infrastructure\LockOperationException.cs" />
     <Compile Include="Infrastructure\RS.cs" />
@@ -142,6 +166,7 @@
     <Compile Include="Settings\DeploymentSettingsExtension.cs" />
     <Compile Include="Settings\IDeploymentSettingsManager.cs" />
     <Compile Include="Settings\SettingsKeys.cs" />
+    <Compile Include="SiteExtensions\InvalidEndpointException.cs" />
     <Compile Include="SiteExtensions\ISiteExtensionManager.cs" />
     <Compile Include="SiteExtensions\SiteExtensionInfo.cs" />
     <Compile Include="SourceControl\IFileFinder.cs" />
@@ -169,7 +194,12 @@
     </EmbeddedResource>
   </ItemGroup>
   <ItemGroup>
+    <None Include="app.config" />
     <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <Analyzer Include="..\packages\Microsoft.CodeAnalysis.Analyzers.2.9.8\analyzers\dotnet\cs\Microsoft.CodeAnalysis.Analyzers.dll" />
+    <Analyzer Include="..\packages\Microsoft.CodeAnalysis.Analyzers.2.9.8\analyzers\dotnet\cs\Microsoft.CodeAnalysis.CSharp.Analyzers.dll" />
   </ItemGroup>
   <Import Project="$(SolutionDir)\Build\Kudu.imports" Condition="$(KeyFile) != ''" />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
@@ -179,6 +209,7 @@
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Enable NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
     </PropertyGroup>
     <Error Condition="!Exists('..\packages\Microsoft.Bcl.Build.1.0.21\build\Microsoft.Bcl.Build.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.Bcl.Build.1.0.21\build\Microsoft.Bcl.Build.targets'))" />
+    <Error Condition="!Exists('..\packages\Microsoft.CodeAnalysis.Analyzers.2.9.8\build\Microsoft.CodeAnalysis.Analyzers.props')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.CodeAnalysis.Analyzers.2.9.8\build\Microsoft.CodeAnalysis.Analyzers.props'))" />
   </Target>
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.

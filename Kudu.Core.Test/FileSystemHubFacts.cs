@@ -1,14 +1,13 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Threading.Tasks;
 using Kudu.Contracts.Tracing;
 using Kudu.Services.Editor;
 using Microsoft.AspNet.SignalR;
 using Microsoft.AspNet.SignalR.Hubs;
 using Moq;
-using System;
-using System.Threading.Tasks;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.Core.Test
 {
@@ -25,13 +24,12 @@ namespace Kudu.Core.Test
             var context = new HubCallerContext(Mock.Of<IRequest>(), Guid.NewGuid().ToString());
             var groups = new Mock<IGroupManager>();
             var clients = new Mock<HubConnectionContext>();
-
             using (
                 var fileSystemHubTest = new FileSystemHubTest(env.Object, tracer.Object, context, groups.Object,
                     clients.Object))
             {
                 // Test
-                fileSystemHubTest.TestRegister(@"C:\");
+                fileSystemHubTest.TestRegister(GetEmptyDir());
 
                 // Assert
                 Assert.Equal(1, FileSystemHubTest.FileWatchersCount);
@@ -39,7 +37,7 @@ namespace Kudu.Core.Test
                 if (update)
                 {
                     // Test
-                    fileSystemHubTest.TestRegister(@"C:\");
+                    fileSystemHubTest.TestRegister(GetEmptyDir());
 
                     // Assert
                     Assert.Equal(1, FileSystemHubTest.FileWatchersCount);
@@ -68,7 +66,7 @@ namespace Kudu.Core.Test
                     clients.Object))
             {
                 // Test
-                fileSystemHubTest.TestRegister(@"C:\");
+                fileSystemHubTest.TestRegister(GetEmptyDir());
 
                 // Assert
                 Assert.Equal(1, FileSystemHubTest.FileWatchersCount);
@@ -100,7 +98,7 @@ namespace Kudu.Core.Test
                     var fileSystemHubTest = new FileSystemHubTest(env.Object, tracer.Object, context, groups.Object,
                         clients.Object);
                     listOfFileSystemHubs.Add(fileSystemHubTest);
-                    fileSystemHubTest.TestRegister(@"C:\");
+                    fileSystemHubTest.TestRegister(GetEmptyDir());
 
                     // Assert
                     Assert.Equal(Math.Min(i + 1, FileSystemHub.MaxFileSystemWatchers), FileSystemHubTest.FileWatchersCount);
@@ -113,6 +111,13 @@ namespace Kudu.Core.Test
                     fileSystemHub.Dispose();
                 }
             }
+        }
+
+        private string GetEmptyDir()
+        {
+            var dir = Path.GetTempPath();
+            var info = Directory.CreateDirectory(Guid.NewGuid().ToString());
+            return info.FullName;
         }
     }
 

@@ -1,13 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.IO.Abstractions;
-using System.Linq;
-using Kudu.Core.Deployment;
-using Kudu.Core.Infrastructure;
+﻿using Kudu.Core.Infrastructure;
 using Moq;
+using System;
+using System.IO.Abstractions;
 using Xunit;
-using Xunit.Extensions;
+using Kudu.TestHarness;
 
 namespace Kudu.Core.Test
 {
@@ -72,6 +68,38 @@ namespace Kudu.Core.Test
         public void IsSubfolderOfTests(string parent, string child, bool expected)
         {
             Assert.Equal(expected, FileSystemHelpers.IsSubfolder(parent, child));
+        }
+
+        [Fact]
+        public void IsFileSystemReadOnlyBasicTest()
+        {
+            // In non-azure env, read-only is false
+            Assert.Equal(false, FileSystemHelpers.IsFileSystemReadOnly());
+
+            // mock Azure Env
+            using (KuduUtils.MockAzureEnvironment())
+            {
+                // able to create and delete folder, should return false
+                var fileSystem = new Mock<IFileSystem>();
+                var dirBase = new Mock<DirectoryBase>();
+                var dirInfoBase = new Mock<DirectoryInfoBase>();
+                var dirInfoFactory = new Mock<IDirectoryInfoFactory>();
+
+                fileSystem.Setup(f => f.Directory).Returns(dirBase.Object);
+                fileSystem.Setup(f => f.DirectoryInfo).Returns(dirInfoFactory.Object);
+
+                dirBase.Setup(d => d.CreateDirectory(It.IsAny<string>())).Returns(dirInfoBase.Object);
+                dirInfoFactory.Setup(d => d.FromDirectoryName(It.IsAny<string>())).Returns(dirInfoBase.Object);
+
+                FileSystemHelpers.Instance = fileSystem.Object;
+                FileSystemHelpers.TmpFolder = @"D:\";   // value doesn`t really matter, just need to have something other than default value
+
+                Assert.Equal(false, FileSystemHelpers.IsFileSystemReadOnly());
+
+                // Read-Only should return true
+                dirBase.Setup(d => d.CreateDirectory(It.IsAny<string>())).Throws<UnauthorizedAccessException>();
+                Assert.Equal(true, FileSystemHelpers.IsFileSystemReadOnly());
+            }
         }
     }
 }

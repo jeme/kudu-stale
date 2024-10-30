@@ -10,7 +10,6 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Web.Http;
-using Kudu.Contracts.Infrastructure;
 using Kudu.Contracts.Settings;
 using Kudu.Contracts.Tracing;
 using Kudu.Core;
@@ -19,16 +18,26 @@ using Kudu.Core.Infrastructure;
 using Kudu.Core.Tracing;
 using Kudu.Services.Arm;
 using Kudu.Services.Infrastructure;
+using System.Threading.Tasks;
 
 namespace Kudu.Services.Performance
 {
     public class ProcessController : ApiController
     {
-        private const string FreeSiteSku = "Free";
 
         private readonly ITracer _tracer;
         private readonly IEnvironment _environment;
         private readonly IDeploymentSettingsManager _settings;
+
+
+        // These settings are not secrets, and are needed by the Visual Studio Snapshot debugger.
+        // Since they are not secrets, it's okay for a Reader over ARM to get them.
+        private readonly IReadOnlyList<string> _armWhitelistedVariables = new []
+        {
+            "MicrosoftProductionDiagnostics_AgentPath",
+            "COR_ENABLE_PROFILING",
+            "CORECLR_ENABLE_PROFILING"
+        };
 
         public ProcessController(ITracer tracer,
                                  IEnvironment environment,
@@ -38,6 +47,7 @@ namespace Kudu.Services.Performance
             _environment = environment;
             _settings = settings;
         }
+
 
         [HttpGet]
         public HttpResponseMessage GetThread(int processId, int threadId)
@@ -65,10 +75,11 @@ namespace Kudu.Services.Performance
             {
                 var process = GetProcessById(id);
                 var results = new List<ProcessThreadInfo>();
+                var requestUri = Request.GetRequestUri(_settings.GetUseOriginalHostForReference()).AbsoluteUri.TrimEnd('/');
 
                 foreach (ProcessThread thread in process.Threads)
                 {
-                    results.Add(GetProcessThreadInfo(thread, Request.RequestUri.AbsoluteUri.TrimEnd('/') + '/' + thread.Id, false));
+                    results.Add(GetProcessThreadInfo(thread, $"{requestUri}/{thread.Id}", false));
                 }
 
                 return Request.CreateResponse(HttpStatusCode.OK, ArmUtils.AddEnvelopeOnArmRequest(results, Request));
@@ -80,8 +91,7 @@ namespace Kudu.Services.Performance
         {
             using (_tracer.Step("ProcessController.GetModule"))
             {
-
-                var module = GetProcessById(id).Modules.Cast<ProcessModule>().FirstOrDefault(t => t.BaseAddress.ToInt64() == Int64.Parse(baseAddress, NumberStyles.HexNumber));
+                var module = GetProcessModules(GetProcessById(id)).Cast<ProcessModule>().FirstOrDefault(t => t.BaseAddress.ToInt64() == Int64.Parse(baseAddress, NumberStyles.HexNumber));
 
                 if (module != null)
                 {
@@ -106,14 +116,38 @@ namespace Kudu.Services.Performance
         }
 
         [HttpGet]
+        public HttpResponseMessage GetEnvironments(int id, string filter)
+        {
+            using (_tracer.Step("ProcessController.GetEnvironments"))
+            {
+                var envs = GetProcessById(id).GetEnvironmentVariables()
+                    .Where(p => string.Equals("all", filter, StringComparison.OrdinalIgnoreCase) || p.Key.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+                    .ToDictionary(p => p.Key, p => p.Value);
+
+                if (ArmUtils.IsArmRequest(Request))
+                {
+                    // No need to hide the secrets if the request is from contributor or admin.
+                    if (!(ArmUtils.IsRbacContributorRequest(Request) || ArmUtils.IsLegacyAuthorizationSource(Request)))
+                    {
+                        envs = envs.Where(kv => _armWhitelistedVariables.Contains(kv.Key, StringComparer.OrdinalIgnoreCase))
+                            .ToDictionary(k => k.Key, v => v.Value);
+                    }
+                }
+
+                return Request.CreateResponse(HttpStatusCode.OK, ArmUtils.AddEnvelopeOnArmRequest(new ProcessEnvironmentInfo(filter, envs), Request));
+            }
+        }
+
+        [HttpGet]
         public HttpResponseMessage GetAllProcesses(bool allUsers = false)
         {
+            var requestUri = Request.GetRequestUri(_settings.GetUseOriginalHostForReference()).GetLeftPart(UriPartial.Path).TrimEnd('/');
             using (_tracer.Step("ProcessController.GetAllProcesses"))
             {
                 var currentUser = Process.GetCurrentProcess().GetUserName();
                 var results = Process.GetProcesses()
-                    .Where(p => allUsers || String.Equals(currentUser, SafeGetValue(p.GetUserName, null), StringComparison.OrdinalIgnoreCase))
-                    .Select(p => GetProcessInfo(p, Request.RequestUri.GetLeftPart(UriPartial.Path).TrimEnd('/') + '/' + p.Id)).OrderBy(p => p.Name.ToLowerInvariant())
+                    .Where(p => allUsers || Kudu.Core.Environment.IsAzureEnvironment() || String.Equals(currentUser, SafeGetValue(p.GetUserName, null), StringComparison.OrdinalIgnoreCase))
+                    .Select(p => GetProcessInfo(p, $"{requestUri}/{p.Id}")).OrderBy(p => p.Name.ToLowerInvariant())
                     .ToList();
                 return Request.CreateResponse(HttpStatusCode.OK, ArmUtils.AddEnvelopeOnArmRequest(results, Request));
             }
@@ -125,11 +159,11 @@ namespace Kudu.Services.Performance
             using (_tracer.Step("ProcessController.GetProcess"))
             {
                 var process = GetProcessById(id);
-                return Request.CreateResponse(HttpStatusCode.OK, ArmUtils.AddEnvelopeOnArmRequest(GetProcessInfo(process, Request.RequestUri.AbsoluteUri, details: true), Request));
+                return Request.CreateResponse(HttpStatusCode.OK, ArmUtils.AddEnvelopeOnArmRequest(GetProcessInfo(process, Request.GetRequestUri(_settings.GetUseOriginalHostForReference()).AbsoluteUri, details: true), Request));
             }
         }
 
-        [HttpDelete]
+        [HttpDelete, HttpPost]
         public void KillProcess(int id)
         {
             using (_tracer.Step("ProcessController.KillProcess"))
@@ -152,7 +186,7 @@ namespace Kudu.Services.Performance
                 }
 
                 string siteSku = _settings.GetWebSiteSku();
-                if ((MINIDUMP_TYPE)dumpType == MINIDUMP_TYPE.WithFullMemory && siteSku.Equals(FreeSiteSku, StringComparison.OrdinalIgnoreCase))
+                if ((MINIDUMP_TYPE)dumpType == MINIDUMP_TYPE.WithFullMemory && siteSku.Equals(Constants.FreeSKU, StringComparison.OrdinalIgnoreCase))
                 {
                     return Request.CreateErrorResponse(HttpStatusCode.InternalServerError,
                         String.Format(CultureInfo.CurrentCulture, Resources.Error_FullMiniDumpNotSupported, siteSku));
@@ -168,7 +202,7 @@ namespace Kudu.Services.Performance
                 {
                     using (_tracer.Step(String.Format("MiniDump pid={0}, name={1}, file={2}", process.Id, process.ProcessName, dumpFile)))
                     {
-                        process.MiniDump(dumpFile, (MINIDUMP_TYPE)dumpType);
+                        process.SnapshotAndDump(dumpFile, (MINIDUMP_TYPE)dumpType);
                         _tracer.Trace("MiniDump size={0}", new FileInfo(dumpFile).Length);
                     }
                 }
@@ -225,60 +259,54 @@ namespace Kudu.Services.Performance
             }
         }
 
-        [HttpGet]
-        public HttpResponseMessage GCDump(int id, int maxDumpCountK = 0, string format = null)
+        [HttpPost]
+        public async Task<HttpResponseMessage> StartProfileAsync(int id, bool iisProfiling = false)
         {
-            using (_tracer.Step("ProcessController.GCDump"))
+            using (_tracer.Step("ProcessController.StartProfileAsync"))
             {
-                DumpFormat dumpFormat = ParseDumpFormat(format, DumpFormat.DiagSession);
+                // check if the process Ids exists in the sandbox. If it doesn't, this method returns a 404 and we are done.
                 var process = GetProcessById(id);
-                var ext = dumpFormat == DumpFormat.DiagSession ? "diagsession" : "gcdump";
 
-                string dumpFile = Path.Combine(_environment.LogFilesPath, "minidump", "dump." + ext);
-                FileSystemHelpers.EnsureDirectory(Path.GetDirectoryName(dumpFile));
-                FileSystemHelpers.DeleteFileSafe(dumpFile);
+                var result = await ProfileManager.StartProfileAsync(process.Id, _tracer, iisProfiling);
 
-                string resourcePath = GetResponseFileName(process.ProcessName, "gcdump");
-                try
+                if(result.StatusCode != HttpStatusCode.OK)
                 {
-                    using (_tracer.Step(String.Format("GCDump pid={0}, name={1}, file={2}", process.Id, process.ProcessName, dumpFile)))
-                    {
-                        process.GCDump(dumpFile, resourcePath, maxDumpCountK, _tracer, _settings.GetCommandIdleTimeout());
-                        _tracer.Trace("GCDump size={0}", new FileInfo(dumpFile).Length);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _tracer.TraceError(ex);
-                    FileSystemHelpers.DeleteFileSafe(dumpFile);
-                    return Request.CreateErrorResponse(HttpStatusCode.InternalServerError, ex.Message);
-                }
-
-                if (dumpFormat == DumpFormat.Zip)
-                {
-                    string responseFileName = GetResponseFileName(process.ProcessName, "zip");
-                    HttpResponseMessage response = Request.CreateResponse();
-                    response.Content = ZipStreamContent.Create(responseFileName, _tracer, zip =>
-                    {
-                        try
-                        {
-                            zip.AddFile(dumpFile, _tracer, String.Empty);
-                        }
-                        finally
-                        {
-                            FileSystemHelpers.DeleteFileSafe(dumpFile);
-                        }
-                    });
-                    return response;
+                    return Request.CreateErrorResponse(result.StatusCode, result.Message);
                 }
                 else
                 {
-                    string responseFileName = GetResponseFileName(process.ProcessName, ext);
+                    return Request.CreateResponse(HttpStatusCode.OK);
+                }
+            }
+        }
+
+        [HttpGet]
+        public async Task<HttpResponseMessage> StopProfileAsync(int id)
+        {
+            using (_tracer.Step("ProcessController.StopProfileAsync"))
+            {
+                // check if the process Ids exists in the sandbox. If it doesn't, this method returns a 404 and we are done.
+                var process = GetProcessById(id);
+
+                bool iisProfiling = ProfileManager.IsIisProfileRunning(process.Id);
+
+                var result = await ProfileManager.StopProfileAsync(process.Id, _tracer, iisProfiling);
+
+                if (result.StatusCode != HttpStatusCode.OK)
+                {
+                    return Request.CreateErrorResponse(result.StatusCode, result.Message);
+                }
+                else
+                {
+                    string profileFileFullPath = ProfileManager.GetProfilePath(process.Id, iisProfiling);
+
+                    string profileFileName = Path.GetFileName(profileFileFullPath);
+
                     HttpResponseMessage response = Request.CreateResponse();
-                    response.Content = new StreamContent(FileStreamWrapper.OpenRead(dumpFile));
+                    response.Content = new StreamContent(FileStreamWrapper.OpenRead(profileFileFullPath));
                     response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
                     response.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment");
-                    response.Content.Headers.ContentDisposition.FileName = responseFileName;
+                    response.Content.Headers.ContentDisposition.FileName = profileFileName;
                     return response;
                 }
             }
@@ -335,15 +363,29 @@ namespace Kudu.Services.Performance
             return threads;
         }
 
-        private static IEnumerable<ProcessModuleInfo> GetModules(Process process, string href)
+        private IEnumerable<ProcessModuleInfo> GetModules(Process process, string href)
         {
             var modules = new List<ProcessModuleInfo>();
-            foreach (var module in process.Modules.Cast<ProcessModule>().OrderBy(m => Path.GetFileName(m.FileName)))
+            foreach (var module in GetProcessModules(process).Cast<ProcessModule>().OrderBy(m => Path.GetFileName(m.FileName)))
             {
                 modules.Add(GetProcessModuleInfo(module, href.TrimEnd('/') + '/' + module.BaseAddress.ToInt64().ToString("x"), details: false));
             }
 
             return modules;
+        }
+
+        private ProcessModuleCollection GetProcessModules(Process process)
+        {
+            try
+            {
+                // this could fail with "A 32 bit processes cannot access modules of a 64 bit process."
+                // currently we don't support that and will return 400 instead of 500.
+                return process.Modules;
+            }
+            catch (Exception ex)
+            {
+                throw new HttpResponseException(Request.CreateErrorResponse(HttpStatusCode.BadRequest, ex.Message));
+            }
         }
 
         private ProcessThreadInfo GetProcessThreadInfo(ProcessThread thread, string href, bool details = false)
@@ -367,7 +409,7 @@ namespace Kudu.Services.Performance
                 threadInfo.PriviledgedProcessorTime = SafeGetValue(() => thread.PrivilegedProcessorTime, TimeSpan.FromSeconds(-1));
                 threadInfo.StartAddress = "0x" + thread.StartAddress.ToInt64().ToString("X");
 
-                if (thread.ThreadState == ThreadState.Wait)
+                if (thread.ThreadState == System.Diagnostics.ThreadState.Wait)
                 {
                     threadInfo.WaitReason = thread.WaitReason.ToString();
                 }
@@ -419,6 +461,7 @@ namespace Kudu.Services.Performance
                 Id = process.Id,
                 Name = process.ProcessName,
                 Href = selfLink,
+                MachineName = System.Environment.MachineName,
                 UserName = SafeGetValue(process.GetUserName, null)
             };
 
@@ -449,34 +492,58 @@ namespace Kudu.Services.Performance
                 info.PrivateMemorySize64 = SafeGetValue(() => process.PrivateMemorySize64, -1);
 
                 info.MiniDump = new Uri(selfLink + "/dump");
-                if (ProcessExtensions.SupportGCDump)
-                {
-                    info.GCDump = new Uri(selfLink + "/gcdump");
-                }
                 info.OpenFileHandles = SafeGetValue(() => GetOpenFileHandles(process.Id), Enumerable.Empty<string>());
                 info.Parent = new Uri(selfLink, SafeGetValue(() => process.GetParentId(_tracer), 0).ToString());
                 info.Children = SafeGetValue(() => process.GetChildren(_tracer, recursive: false), Enumerable.Empty<Process>()).Select(c => new Uri(selfLink, c.Id.ToString()));
                 info.Threads = SafeGetValue(() => GetThreads(process, selfLink.ToString()), Enumerable.Empty<ProcessThreadInfo>());
                 info.Modules = SafeGetValue(() => GetModules(process, selfLink.ToString().TrimEnd('/') + "/modules"), Enumerable.Empty<ProcessModuleInfo>());
                 info.TimeStamp = DateTime.UtcNow;
-                info.EnvironmentVariables = SafeGetValue(process.GetEnvironmentVariables, null);
+                info.EnvironmentVariables = SafeGetValue(process.GetEnvironmentVariables, new Dictionary<string, string>());
                 info.CommandLine = SafeGetValue(process.GetCommandLine, null);
-                if (info.EnvironmentVariables != null)
+                info.IsProfileRunning = ProfileManager.IsProfileRunning(process.Id);
+                info.IsIisProfileRunning = ProfileManager.IsIisProfileRunning(process.Id);
+                info.IisProfileTimeoutInSeconds = ProfileManager.IisProfileTimeoutInSeconds;
+                SetEnvironmentInfo(info);
+
+                if (ArmUtils.IsArmRequest(Request))
                 {
-                    info.IsScmSite = SafeGetValue(() => ProcessExtensions.GetIsScmSite(info.EnvironmentVariables), false);
-                    info.IsWebJob = SafeGetValue(() => ProcessExtensions.GetIsWebJob(info.EnvironmentVariables), false);
-                    info.Description = SafeGetValue(() => ProcessExtensions.GetDescription(info.EnvironmentVariables), null);
+                    // No need to hide the secrets if the request is from contributor or admin.
+                    if (!(ArmUtils.IsRbacContributorRequest(Request) || ArmUtils.IsLegacyAuthorizationSource(Request)))
+                    {
+                        info.EnvironmentVariables = info.EnvironmentVariables
+                            .Where(kv => _armWhitelistedVariables.Contains(kv.Key, StringComparer.OrdinalIgnoreCase))
+                            .ToDictionary(k => k.Key, v => v.Value);
+                        info.CommandLine = null;
+                    }
                 }
             }
 
             return info;
         }
 
+        internal void SetEnvironmentInfo(ProcessInfo processInfo)
+        {
+            if (processInfo.EnvironmentVariables != null)
+            {
+                processInfo.IsScmSite = SafeGetValue(() => ProcessExtensions.GetIsScmSite(processInfo.EnvironmentVariables), false);
+                processInfo.IsWebJob = SafeGetValue(() => ProcessExtensions.GetIsWebJob(processInfo.EnvironmentVariables), false);
+                processInfo.Description = SafeGetValue(() => ProcessExtensions.GetDescription(processInfo.EnvironmentVariables), null);
+            }
+        }
+
         private Process GetProcessById(int id)
         {
             try
             {
-                return id <= 0 ? Process.GetCurrentProcess() : Process.GetProcessById(id);
+                switch (id)
+                {
+                    case 0:
+                        return Process.GetCurrentProcess();
+                    case -1:
+                        return Process.GetProcessesByName("w3wp").First(s => s.Id != Process.GetCurrentProcess().Id);
+                    default:
+                        return Process.GetProcessById(id);
+                }
             }
             catch (ArgumentException ex)
             {
@@ -507,7 +574,6 @@ namespace Kudu.Services.Performance
         {
             Raw,
             Zip,
-            DiagSession,
         }
 
         public class FileStreamWrapper : DelegatingStream
@@ -536,6 +602,6 @@ namespace Kudu.Services.Performance
             {
                 return new FileStreamWrapper(path);
             }
-        }
+        }        
     }
 }

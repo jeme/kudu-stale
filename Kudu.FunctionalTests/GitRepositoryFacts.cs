@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using Kudu.Core.Infrastructure;
@@ -7,12 +8,12 @@ using Kudu.Core.SourceControl.Git;
 using Kudu.Core.Test;
 using Kudu.Core.Tracing;
 using Kudu.TestHarness;
+using Kudu.TestHarness.Xunit;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.FunctionalTests
 {
-    [TestHarnessClassCommand]
+    [KuduXunitTestClass]
     public class GitRepositoryFacts
     {
         [Theory]
@@ -44,13 +45,13 @@ namespace Kudu.FunctionalTests
                 // Arrange
                 var gitRepo = (IGitRepository)Activator.CreateInstance(gitRepoType, testRepository.Environment, new MockDeploymentSettingsManager(), NullTracerFactory.Instance);
                 string postCommitHookPath = Path.Combine(testRepository.PhysicalPath, ".git", "hooks", "post-receive");
-                string expected = "#!/bin/sh\r\nread i\r\necho $i > pushinfo\r\n\"$KUDU_EXE\" \"$KUDU_APPPATH\" \"$KUDU_MSBUILD\" \"$KUDU_DEPLOYER\"\n";
+                string expected = "#!/bin/sh\r\nread i\r\necho $i > pushinfo\r\n\"$KUDU_EXE\" \"$KUDU_APPPATH\" \"$KUDU_MSBUILD\" \"$KUDU_DEPLOYER\"\r\n";
 
                 // Act
                 gitRepo.Initialize();
 
                 // Assert
-                Assert.Equal(expected, File.ReadAllText(postCommitHookPath));
+                Assert.Equal(NormalizeLineEnding(expected), NormalizeLineEnding(File.ReadAllText(postCommitHookPath)));
             }
         }
 
@@ -155,7 +156,7 @@ namespace Kudu.FunctionalTests
         }
 
         [Theory]
-        [PropertyData("ParseCommitData")]
+        [MemberData("ParseCommitData")]
         public void GitRepoParsesCommitDetails(string id, ChangeSet expectedChangeset)
         {
             foreach (Type gitRepoType in new[] { typeof(LibGit2SharpRepository), typeof(GitExeRepository) })
@@ -182,7 +183,7 @@ namespace Kudu.FunctionalTests
         {
             get
             {
-                yield return new object[] { "HEAD", new ChangeSet("4e36ca31aa30ea08a5e5d38c65652a020d48e1d0", "Raquel Almeida", "raquel_soares@msn.com", "Chaning Index view", new DateTimeOffset(2011, 11, 23, 10, 30, 16, TimeSpan.FromHours(-8))) };
+                yield return new object[] { "HEAD", new ChangeSet("6c2f65d22c23461b2ef750fcb98531d645de0a70", "davidebbo", "david.ebbo@microsoft.com", "Reference Mvc 3.0.0.1", new DateTimeOffset(2015, 06, 07, 22, 13, 17, TimeSpan.FromHours(-7))) };
                 yield return new object[] { "89d70221f6a86d4243af3df7a8c80e65a29429af", new ChangeSet("89d70221f6a86d4243af3df7a8c80e65a29429af", "Raquel Almeida", "raquel_soares@msn.com", "Initial commit", new DateTimeOffset(2011, 11, 23, 10, 02, 34, TimeSpan.FromHours(-8))) };
             }
         }
@@ -199,6 +200,8 @@ namespace Kudu.FunctionalTests
                 string fileToWrite = Path.Combine(testRepo.PhysicalPath, "some file.txt");
                 File.WriteAllText(Path.Combine(testRepo.PhysicalPath, ".git", "index.lock"), "");
                 File.WriteAllText(Path.Combine(testRepo.PhysicalPath, ".git", "HEAD.lock"), "");
+                File.WriteAllText(Path.Combine(testRepo.PhysicalPath, ".git", "refs", "heads", "master.lock"), "");
+                File.WriteAllText(Path.Combine(testRepo.PhysicalPath, ".git", "refs", "heads", "dev.lock"), "");
                 File.WriteAllText(fileToWrite, "Hello world");
                 var env = new TestEnvironment
                 {
@@ -214,6 +217,8 @@ namespace Kudu.FunctionalTests
                 // Act - 2
                 gitRepo.ClearLock();
                 Git.Add(testRepo.PhysicalPath, fileToWrite);
+
+                Assert.Equal(0, Directory.EnumerateFiles(Path.Combine(testRepo.PhysicalPath, ".git", "refs", "heads"), "*.lock", SearchOption.TopDirectoryOnly).Count());
             }
 
         }
@@ -226,6 +231,11 @@ namespace Kudu.FunctionalTests
 
             PathHelper.EnsureDirectory(repoPath);
             return new TestRepository(repoPath, obliterateOnDispose: true);
+        }
+
+        private static string NormalizeLineEnding(string content)
+        {
+            return content.Replace("\r\n", "\n");
         }
 
         public void Dispose()

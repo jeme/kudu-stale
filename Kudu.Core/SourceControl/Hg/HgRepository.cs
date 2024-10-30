@@ -219,17 +219,21 @@ namespace Kudu.Core.SourceControl
             // This doesn't work for us since ssh.exe is located under Program Files in typical Kudu scenarios.
             _hgExecutable.SetHomePath(_homePath);
             string currentPath = System.Environment.GetEnvironmentVariable(PATH_KEY);
-            currentPath = currentPath.TrimEnd(';') + ';' + Path.GetDirectoryName(PathUtility.ResolveSSHPath());
+            char sep = Path.PathSeparator;
+            currentPath = currentPath.TrimEnd(sep) + sep + Path.GetDirectoryName(PathUtilityFactory.Instance.ResolveSSHPath());
             _hgExecutable.EnvironmentVariables[PATH_KEY] = currentPath;
 
             ITracer tracer = _traceFactory.GetTracer();
 
             bool retried = false;
+          
+            remote = Uri.EscapeUriString(remote);
+            branchName = Uri.EscapeUriString(branchName);
 
         fetch:
             try
             {
-                _hgExecutable.Execute(tracer, "pull {0} --branch {1} --noninteractive", remote, branchName, PathUtility.ResolveSSHPath());
+                _hgExecutable.Execute(tracer, "pull '{0}' --branch '{1}' --noninteractive", remote, branchName, PathUtilityFactory.Instance.ResolveSSHPath());
             }
             catch (CommandLineException exception)
             {
@@ -250,7 +254,7 @@ namespace Kudu.Core.SourceControl
                 }
                 throw;
             }
-            _hgExecutable.Execute(tracer, "update --clean {0}", branchName);
+            _hgExecutable.Execute(tracer, "update --clean '{0}'", branchName);
         }
 
         public void ClearLock()
@@ -339,7 +343,7 @@ namespace Kudu.Core.SourceControl
             // If Mercurial.Net can find the location of the repository via the PATH variable, let we'll use that
             if (!Client.CouldLocateClient)
             {
-                Client.SetClientPath(PathUtility.ResolveHgPath());
+                Client.SetClientPath(PathUtilityFactory.Instance.ResolveHgPath());
             }
             return true;
         }

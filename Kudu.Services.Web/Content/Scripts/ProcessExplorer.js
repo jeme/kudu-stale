@@ -62,7 +62,7 @@ var Utilities = (function () {
                 if (cells[j] instanceof HTMLElement) {
                     cell.appendChild(cells[j]);
                 } else {
-                    cell.innerHTML = cells[j];
+                    $(cell).text(cells[j]);
                 }
                 row.appendChild(cell);
             }
@@ -149,7 +149,7 @@ var Utilities = (function () {
         return options;
     };
 
-    Utilities.downloadURL = function (url) {
+    Utilities.downloadURL = function (url,showResponseMessage) {
         var hiddenIFrameID = "hiddenDownloader", iframe;
         iframe = document.getElementById(hiddenIFrameID);
         if (iframe === null) {
@@ -158,8 +158,18 @@ var Utilities = (function () {
             iframe.style.display = "none";
             document.body.appendChild(iframe);
         }
+        iframe.onload = function (e) {
+            if (showResponseMessage) {
+                var iframeDocument = iframe.contentDocument || iframe.contentWindow.document; // for both IE and other
+                var iFrameBody = iframeDocument.getElementsByTagName('body')[0];
+                var iframeText = $(iFrameBody).text();
+                if (iframeText && iframeText.length > 0) {
+                    showModal("Error", iframeText);
+                }
+            }
+        }
         iframe.src = url;
-    };
+   };
 
     Utilities.arrayToDivs = function (lines) {
         var htmls = [];
@@ -197,10 +207,117 @@ var Utilities = (function () {
         }
         return button;
     };
+
+
+    Utilities.getCheckbox = function (id, textContent, isProfileRunning, iisIisProfileRunning) {
+        var span = document.createElement("span");
+        $(span).css("width", "138px");
+        $(span).css("white-space", "nowrap");
+        $(span).css("margin-right", "10px");
+
+        var checkbox = document.createElement("input");
+        checkbox.id = id;
+        checkbox.type = "checkbox"
+        $(checkbox).css("margin-right", "10px");
+        $(checkbox).css("margin-left", "10px");
+
+        checkbox.disabled = "";
+        checkbox.checked = false;
+
+        if (isProfileRunning)
+        {
+            checkbox.disabled = "disabled";
+        }
+        if (iisIisProfileRunning)
+        {
+            checkbox.checked = true;
+        }
+       
+        span.appendChild(checkbox);
+
+        var label = document.createElement("span");
+        label.textContent = textContent;
+        span.appendChild(label);
+
+        return span;
+    };
+
+    Utilities.getHideSecretsCheckbox = function (id, textContent, isEnabled, isChecked) {
+        var span = document.createElement("span");
+        $(span).css("width", "138px");
+        $(span).css("white-space", "nowrap");
+        $(span).css("margin-right", "10px");
+
+        var checkbox = document.createElement("input");
+        checkbox.id = id;
+        checkbox.type = "checkbox"
+        $(checkbox).css("margin-right", "10px");
+        $(checkbox).css("margin-left", "10px");
+
+        checkbox.disabled = "";
+        checkbox.checked = isChecked;
+
+        if (!isEnabled) {
+            checkbox.disabled = "disabled";
+        }
+
+        checkbox.onchange = function () {
+            var flipHidden = (!secretsHidden).toString();
+            var paramName = "hideSecrets";
+
+            // Replace hideSecrets param in URL
+            var str = location.search;
+            if (new RegExp("[&?]" + paramName + "([=&].+)?$").test(str)) {
+                str = str.replace(new RegExp("(?:[&?])" + paramName + "[^&]*", "g"), "")
+            }
+            str += "&";
+            str += paramName + "=" + flipHidden;
+            str = "?" + str.slice(1);
+
+            location.assign(location.origin + location.pathname + str + location.hash);
+        };
+
+        span.appendChild(checkbox);
+
+        var label = document.createElement("span");
+        label.textContent = textContent;
+        span.appendChild(label);
+
+        return span;
+    };
+
+    Utilities.getKeyVaultReferenceInformation = function (serializedString) {
+        try {
+            return JSON.parse(serializedString);
+        } catch (e) {
+            console.log("error parsing json: " + e.toString());
+            return {};
+        }
+    }
+
+    Utilities.hideKeyVaultSecrets = function (environmentVariables, keyVaultReferenceInformation) {
+        var array = [];
+        environmentVariables.forEach(envVar => {
+            try {
+                if (keyVaultReferenceInformation[envVar.key]) {
+                    envVar.value = "[Hidden - " + keyVaultReferenceInformation[envVar.key]["status"] + ": " + keyVaultReferenceInformation[envVar.key]["rawReference"] + "]";
+                }
+                
+            } catch (e) {
+            }
+            array.push(envVar);
+        });
+
+        return array;
+    }
+
     return Utilities;
 })();
 
 var Process = (function () {
+    var webSiteSku;
+    var keyVaultReferenceInformation;
+
     function Process(json) {
         this._json = json;
         this._json.threads = Utilities.getArrayFromJson(json.threads, function (t) {
@@ -213,9 +330,24 @@ var Process = (function () {
             return new Handle(h);
         });
 
+        var keyVaultReferenceInfo = "";
         this._json.environment_variables = Utilities.getArrayFromJsonObject(json.environment_variables, function (key, value) {
+            if (key === "WEBSITE_SKU") {
+                webSiteSku = value;
+            }
+
+            if (key === "WEBSITE_KEYVAULT_REFERENCES") {
+                keyVaultReferenceInfo = value;
+            }
+
             return new EnvironmentVariable(key, value);
         });
+
+        keyVaultReferenceInformation = Utilities.getKeyVaultReferenceInformation(keyVaultReferenceInfo);
+
+        if (keyVaultReferenceInfo !== "" && secretsHidden) {
+            this._json.environment_variables = Utilities.hideKeyVaultSecrets(this._json.environment_variables, keyVaultReferenceInformation);
+        }
     }
     Object.defineProperty(Process.prototype, "Id", {
         get: function () {
@@ -249,14 +381,6 @@ var Process = (function () {
         configurable: true
     });
 
-    Object.defineProperty(Process.prototype, "Gcdump", {
-        get: function () {
-            return this._json.gcdump;
-        },
-        enumerable: true,
-        configurable: true
-    });
-
     Object.defineProperty(Process.prototype, "ChildrenIds", {
         get: function () {
             var childrenIds = [];
@@ -283,9 +407,16 @@ var Process = (function () {
             if (!this._json.total_cpu_time) {
                 return "  ?";
             }
+            // ts format is [-][d.]hh:mm:ss[.fffffff]
             var total = 0;
             var parts = this._json.total_cpu_time.split(":");
-            total += parseInt(parts[0]) * 60;
+            var hrs = parts[0].split(".");
+            if (hrs.length > 1) {
+                total += parseInt(hrs[0]) * 24 * 60 * 60;
+                total += parseInt(hrs[1]) * 60 * 60;
+            } else {
+                total += parseInt(hrs[0]) * 60 * 60;
+            }
             total += parseInt(parts[1]) * 60;
             total += parseInt(parts[2]);
             if (total !== 0) {
@@ -305,6 +436,22 @@ var Process = (function () {
             }
             var parts = this._json.user_name.split("\\");
             return parts[1];
+        },
+        enumerable: true,
+        configurable: true
+    });
+
+    Object.defineProperty(Process.prototype, "WebSiteSku", {
+        get: function () {
+            return webSiteSku;
+        },
+        enumerable: true,
+        configurable: true
+    });
+
+    Object.defineProperty(Process.prototype, "NumKeyVaultReferences", {
+        get: function () {
+            return Object.keys(keyVaultReferenceInformation).length;
         },
         enumerable: true,
         configurable: true
@@ -336,12 +483,39 @@ var Process = (function () {
         tr.appendChild(Utilities.ToTd(Utilities.commaSeparateNumber(this._json.working_set / 1024) + " KB"));
         tr.appendChild(Utilities.ToTd(Utilities.commaSeparateNumber(this._json.private_memory / 1024) + " KB"));
         tr.appendChild(Utilities.ToTd(Utilities.commaSeparateNumber(this._json.thread_count)));
-        tr.appendChild(Utilities.ToTd(Utilities.getButton("ui-button-info", this._json.id + "-properties", "Properties..", function (e) {
+        tr.appendChild(Utilities.ToTd(Utilities.getButton("btn btn-info", this._json.id + "-properties", "Properties..", function (e) {
             e.preventDefault();
             e.stopPropagation();
             _this.dialog().dialog("open");
             $("li").blur();
         }, false)));
+        
+        var profilingButton = Utilities.getButton("btn btn-info", this._json.id + "-Profiling", this._json.is_profile_running ? "Stop Profiling" : "Start Profiling", function (e) {
+            handleProfilingEvents(e, _this._json.id, _this._json.iis_profile_timeout_in_seconds);
+        }, false);
+        $(profilingButton).css("width", "138px");
+
+        var iisProfilingCheckbox = Utilities.getCheckbox(this._json.id + "-iisProfilingCheck", "Collect IIS Events", this._json.is_profile_running, this._json.is_iis_profile_running)
+
+        if (this._json.is_profile_running) { // highlight button if the profiler has started
+            $(profilingButton).addClass("btn-danger");
+        }
+
+        if (Process.prototype.WebSiteSku === "Free" || Process.prototype.WebSiteSku === "Shared" || Process.prototype.WebSiteSku === "Dynamic") {
+            $(profilingButton).css("opacity", "0.5");
+            $(profilingButton).off("click");
+            $(profilingButton).attr("title", "Profiling is not supported for Free/Shared sites or Function apps in consumption plan.");
+            $(profilingButton).tooltip().show();
+
+            var iisProfilingCheckboxControl = iisProfilingCheckbox.childNodes.item(this._json.id + "-iisProfilingCheck");           
+            if (iisProfilingCheckboxControl != null) {
+                iisProfilingCheckboxControl.disabled = 'disabled';
+            }
+        }
+
+        tr.appendChild(Utilities.ToTd(iisProfilingCheckbox));
+        tr.appendChild(Utilities.ToTd(profilingButton));
+        
         return $(tr);
     };
 
@@ -431,12 +605,8 @@ var Process = (function () {
             });
         }));
 
-        buttonDiv.appendChild(Utilities.getButton("ui-button-info", div.id + "-dumb", "Download memory dump", function () {
-            Utilities.downloadURL(_this._json.minidump);
-        }));
-
-        buttonDiv.appendChild(Utilities.getButton("ui-button-info", div.id + "-gcdumb", "Download GC dump", function () {
-            Utilities.downloadURL(_this._json.gcdump);
+        buttonDiv.appendChild(Utilities.getButton("ui-button-info", div.id + "-dump", "Download memory dump", function () {
+            Utilities.downloadURL(_this._json.minidump + "?dumpType=2");
         }));
 
         div.appendChild(buttonDiv);
@@ -459,6 +629,11 @@ var Process = (function () {
         var _this = this;
         var div = Utilities.createDiv(this._json.id.toString() + "-environment-variables-tab");
 
+        if (Process.prototype.NumKeyVaultReferences > 0) {
+            var hideSecretsCheckbox = Utilities.getHideSecretsCheckbox(this._json.id + "-hideSecrets", "Hide KeyVault Secrets", true, secretsHidden)
+            div.appendChild(hideSecretsCheckbox);
+        }
+        
         var table = Utilities.makeArrayTable(div.id + "-table", ["Key", "Value"], this._json.environment_variables);
         div.appendChild(table);
         return $(div).hide();
@@ -553,7 +728,7 @@ var Module = (function () {
     Module.prototype.tableCells = function () {
         var _this = this;
         return [
-            "<strong>" + this._json.file_name + "</strong>", this._json.file_version, Utilities.getButton("ui-button-info", this._json.base_address.toString() + "-more", "More...", function () {
+            this._json.file_name, this._json.file_version, Utilities.getButton("ui-button-info", this._json.base_address.toString() + "-more", "More...", function () {
                 _this.dialog().dialog("open");
             })];
     };
@@ -830,10 +1005,6 @@ function overrideRightClickMenu() {
                 case "dump2":
                     Utilities.downloadURL(process.Minidump + "?dumpType=2");
                     break;
-                case "gcdump":
-                    Utilities.downloadURL(process.Gcdump);
-                    processExplorerSetupAsync();
-                    break;
                 case "properties":
                     process.dialog().dialog("open");
                     $("li")[0].click();
@@ -850,7 +1021,6 @@ function overrideRightClickMenu() {
                     "dump2": { name: "Full Dump" }
                 }
             },
-            "gcdump": { name: "Download GC Dump" },
             "sep1": "---------",
             "properties": { name: "Properties" }
         },
@@ -882,6 +1052,143 @@ function searchForHandle() {
         $("#handle-result").html(Utilities.arrayToDivs(result));
     } else {
         $("#handle-result").html(Utilities.errorDiv("No handle found").outerHTML);
+    }
+}
+
+function handleProfilingEvents(e, processId, iisProfilingTimeoutInSeconds) {
+    if (!e || !e.target || typeof e.target.textContent === "undefined") {
+        return;
+    }
+
+    var iisProfiling = false;
+
+    var iisProfilingCheckbox = document.getElementById(processId + "-iisProfilingCheck");
+
+    if (iisProfilingCheckbox != null) {
+        iisProfiling = iisProfilingCheckbox.checked;
+    }
+
+    if (e.target.textContent.indexOf("Stop") === 0) {
+        stopProfiling(e, processId);
+        if (iisProfilingCheckbox != null) {
+            iisProfilingCheckbox.disabled = "";
+        }
+    }
+    else if (e.target.textContent.indexOf("Starting") !== 0) {
+        if (iisProfiling) {
+            var divConfirm = document.getElementById('dialog-confirm')
+            if (divConfirm == null) {
+                divConfirm = Utilities.createDiv('dialog-confirm');
+                divConfirm.title = "Collect IIS Events?";
+
+            }
+            divConfirm.innerHTML = "IIS profiling enables IIS and threadTime ETW events. The generated trace file can be analyzed using Perfview which is available at <a style='outline: none' href='https://www.microsoft.com/en-us/download/details.aspx?id=28567'>https://www.microsoft.com/en-us/download/details.aspx?id=28567</a>. <br/><br/>The profiling session will automatically timeout after <b>" + iisProfilingTimeoutInSeconds.toString() + "</b> seconds if not stopped manually.<br/><br/>Enabling IIS Profiling is a relatively <b>expensive option</b> to turn on as it increases the CPU usage and disk I/O on your instance. Are you sure you want to continue?"
+            $(divConfirm).dialog({
+                resizable: false,
+                height: 330,
+                width: 450,
+                modal: true,
+                buttons: [{
+                    text: "Yes",
+                    click: function () {
+                        if (iisProfilingCheckbox != null) {
+                            iisProfilingCheckbox.disabled = "disabled";
+                        }
+                        e.target.textContent = "Starting Profiler...";
+                        startProfiling(e, processId, iisProfiling);
+                        $(this).dialog("close");
+                    }
+                }, {
+                    text: "No",
+                    click: function () {
+                        $(this).dialog("close");
+                    }
+                }]
+            });
+        }
+        else {
+
+            // so this is when someone wants to collect profiler traces
+            // without the IIS profiling events. We still want to
+            // disable the profiling check box here
+
+            if (iisProfilingCheckbox != null) {
+                iisProfilingCheckbox.disabled = "disabled";
+            }
+            e.target.textContent = "Starting Profiler...";
+            startProfiling(e, processId, iisProfiling);
+        }
+    }
+}
+
+function postProfileRequest(action, processId, iisProfiling) {
+    var uri = "/api/processes/" + processId + "/profile/" + action;
+
+    if (iisProfiling)
+        uri = uri + "?iisProfiling=true";
+
+    var request = {
+            method: "POST",
+            contentType: "application/json",
+        };
+    return $.ajax(uri, request);
+}
+
+function startProfiling(e, processId, iisProfiling) {
+    var request = postProfileRequest("start", processId, iisProfiling);
+    request.done(function (resp) {
+        e.target.title = "";
+        e.target.textContent = "Stop Profiling";
+        $(e.currentTarget).addClass("btn-danger");  // highlight button if the profiler has started
+    });
+    request.fail(function (resp) {
+        var obj = JSON.parse(resp.responseText);
+        alert(obj["Message"]);
+        e.target.textContent = "Start Profiling";
+    });
+}
+
+function showModal(title, content) {
+
+    if (!$("#generalModal").hasClass('ui-dialog-content')) { //check if already init-ed
+        $("#generalModal").dialog({
+            autoOpen: false,
+            resizable: false,
+            draggable: false,
+            modal: true,
+            width: "500px",
+            open: function () {
+                $(this).siblings(".ui-dialog-titlebar")
+                              .find("button").blur();
+            },
+            create: function () {
+                $(".ui-dialog").find(".ui-dialog-titlebar").css({
+                    'background-image': 'none',
+                    'background-color': 'white',
+                    'border': 'none'
+                });
+            }
+        });
+    }
+    $('#generalModal').dialog('option', 'title', title);
+    $("#generalModal .content").text(content);
+    $("#generalModal").dialog("open");
+}
+
+function stopProfiling(e, processId) {
+    var uri = window.location.protocol + "//" + window.location.host + "/api/processes/" + processId + "/profile/stop";
+    showModal("Generating diagnostics...", "The profiler is now generating your report. This could take a couple of minutes after which you will be prompted with a download.");
+
+    Utilities.downloadURL(uri, true);
+    e.target.textContent = "Start Profiling";
+    e.target.title = "It may take a few seconds for the download profile dialog to appear";
+    
+    $(e.currentTarget).removeClass("btn-danger");  // remove highlight button if the profiler has stopped
+
+    var iisProfilingCheckbox = document.getElementById(processId + "-iisProfilingCheck");
+    if (iisProfilingCheckbox != null) {
+        iisProfilingCheckbox.disabled = "";
+        iisProfilingCheckbox.checked = false; 
     }
 }
 
@@ -928,6 +1235,7 @@ window.onload = function () {
     $("#dialog-form").dialog({
         autoOpen: false,
         height: 300,
+        width: 800,
         buttons: {
             "Search": function () {
                 return searchForHandle();

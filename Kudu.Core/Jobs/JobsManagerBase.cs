@@ -4,12 +4,11 @@ using System.IO;
 using System.IO.Abstractions;
 using System.IO.Compression;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Web;
 using System.Web.Hosting;
 using Kudu.Contracts.Jobs;
 using Kudu.Contracts.Settings;
+using Kudu.Contracts.Tracing;
 using Kudu.Core.Infrastructure;
 using Kudu.Core.Tracing;
 using Newtonsoft.Json;
@@ -25,7 +24,9 @@ namespace Kudu.Core.Jobs
             new BashScriptHost(),
             new PythonScriptHost(),
             new PhpScriptHost(),
-            new NodeScriptHost()
+            new NodeScriptHost(),
+            new DnxScriptHost(),
+            new FSharpScriptHost()
         };
 
         public static bool IsUsingSdk(string specificJobDataPath)
@@ -40,9 +41,28 @@ namespace Kudu.Core.Jobs
                 return false;
             }
         }
+
+        public static void CleanupDeletedJobs(IEnumerable<string> existingJobs, string jobsDataPath, ITracer tracer)
+        {
+            DirectoryInfoBase jobsDataDirectory = FileSystemHelpers.DirectoryInfoFromDirectoryName(jobsDataPath);
+            if (jobsDataDirectory.Exists)
+            {
+                DirectoryInfoBase[] jobDataDirectories = jobsDataDirectory.GetDirectories("*", SearchOption.TopDirectoryOnly);
+                IEnumerable<string> allJobDataDirectories = jobDataDirectories.Select(j => j.Name);
+                IEnumerable<string> directoriesToRemove = allJobDataDirectories.Except(existingJobs, StringComparer.OrdinalIgnoreCase);
+                foreach (string directoryToRemove in directoriesToRemove)
+                {
+                    using (tracer.Step("CleanupDeletedJobs"))
+                    {
+                        tracer.Trace("Removed job data path as the job was already deleted: " + directoryToRemove);
+                        FileSystemHelpers.DeleteDirectorySafe(Path.Combine(jobsDataPath, directoryToRemove));
+                    }
+                }
+            }
+        }
     }
 
-    public abstract class JobsManagerBase<TJob> : JobsManagerBase, IJobsManager<TJob>, IRegisteredObject where TJob : JobBase, new()
+    public abstract class JobsManagerBase<TJob> : JobsManagerBase, IJobsManager<TJob>, IDisposable, IRegisteredObject where TJob : JobBase, new()
     {
         private const string DefaultScriptFileName = "run";
 
@@ -50,36 +70,118 @@ namespace Kudu.Core.Jobs
 
         private string _lastKnownAppBaseUrlPrefix;
 
+        internal static object jobsListCacheLockObj = new object();
+
         protected IEnvironment Environment { get; private set; }
 
         protected IDeploymentSettingsManager Settings { get; private set; }
 
         protected ITraceFactory TraceFactory { get; private set; }
 
-        protected string JobsBinariesPath { get; private set; }
+        public string JobsBinariesPath { get; private set; }
 
         protected string JobsDataPath { get; private set; }
 
         protected IAnalytics Analytics { get; private set; }
 
-        protected JobsManagerBase(ITraceFactory traceFactory, IEnvironment environment, IDeploymentSettingsManager settings, IAnalytics analytics, string jobsTypePath)
+        private readonly IEnumerable<string> _excludedJobsNames;
+
+        protected JobsFileWatcher JobsWatcher { get; set; }
+
+        internal static IDictionary<string, IEnumerable<TJob>> CacheMap { get; } = new Dictionary<string, IEnumerable<TJob>>();
+
+        private DateTime _jobListCacheExpiryDate;
+
+        private const int _jobListCacheTimeOutInMinutes = 10;
+
+        List<Action<string>> FileWatcherExtraEventHandlers;
+
+        protected JobsManagerBase(ITraceFactory traceFactory, IEnvironment environment, IDeploymentSettingsManager settings, IAnalytics analytics, string jobsTypePath, string basePath, IEnumerable<string> excludedJobsNames)
         {
             TraceFactory = traceFactory;
             Environment = environment;
             Settings = settings;
             Analytics = analytics;
 
+            _excludedJobsNames = excludedJobsNames ?? Enumerable.Empty<string>();
             _jobsTypePath = jobsTypePath;
-
-            JobsBinariesPath = Path.Combine(Environment.JobsBinariesPath, jobsTypePath);
+            JobsBinariesPath = Path.Combine(basePath, jobsTypePath);
             JobsDataPath = Path.Combine(Environment.JobsDataPath, jobsTypePath);
-
+            JobsWatcher = new JobsFileWatcher(JobsBinariesPath, OnJobChanged, null, ListJobNames, traceFactory, analytics, GetJobType());
             HostingEnvironment.RegisterObject(this);
         }
 
-        public abstract IEnumerable<TJob> ListJobs();
+        protected virtual IEnumerable<string> ListJobNames(bool forceRefreshCache)
+        {
+            return ListJobs(forceRefreshCache).Select(job => job.Name);
+        }
+
+        protected string GetJobType()
+        {
+            // jobType can be triggered, continuous, triggered/SDK or continuous/SDK
+            return IsUsingSdk(JobsDataPath) ? $"{_jobsTypePath}/SDK" : _jobsTypePath;
+        }
+
+        public void RegisterExtraEventHandlerForFileChange(Action<string> action)
+        {
+            if (FileWatcherExtraEventHandlers == null)
+            {
+                FileWatcherExtraEventHandlers = new List<Action<string>>();
+            }
+            FileWatcherExtraEventHandlers.Add(action);
+        }
+
+        private void OnJobChanged(string jobName)
+        {
+            ClearJobListCache();
+            if (FileWatcherExtraEventHandlers != null)
+            {
+                foreach (Action<string> action in FileWatcherExtraEventHandlers)
+                {
+                    action.Invoke(jobName);
+                }
+            }
+
+        }
+
+        public IEnumerable<TJob> ListJobs(bool forceRefreshCache)
+        {
+            var jobList = JobListCache;
+            lock (jobsListCacheLockObj)
+            {
+                if (jobList == null || forceRefreshCache || _jobListCacheExpiryDate < DateTime.Now)
+                {
+                    jobList = ListJobsInternal();
+                    JobListCache = jobList;
+                    _jobListCacheExpiryDate = DateTime.Now.AddMinutes(_jobListCacheTimeOutInMinutes);
+                }
+            }
+            return jobList;
+        }
+
+        internal IEnumerable<TJob> JobListCache
+        {
+            get
+            {
+                return CacheMap.ContainsKey(JobsBinariesPath)
+                    ? CacheMap[JobsBinariesPath]
+                    : null;
+            }
+
+            set
+            {
+                CacheMap[JobsBinariesPath] = value;
+            }
+        }
+
+        internal static void ClearJobListCache()
+        {
+            CacheMap.Clear();
+        }
 
         public abstract TJob GetJob(string jobName);
+
+        public bool HasJob(string jobName) => FileSystemHelpers.DirectoryExists(Path.Combine(JobsBinariesPath, jobName));
 
         public TJob CreateOrReplaceJobFromZipStream(Stream zipStream, string jobName)
         {
@@ -88,7 +190,7 @@ namespace Kudu.Core.Jobs
                 {
                     using (var zipArchive = new ZipArchive(zipStream, ZipArchiveMode.Read))
                     {
-                        zipArchive.Extract(jobDirectory.FullName);
+                        zipArchive.Extract(jobDirectory.FullName, TraceFactory.GetTracer());
                     }
                 });
         }
@@ -142,6 +244,8 @@ namespace Kudu.Core.Jobs
                     FileSystemHelpers.DeleteDirectorySafe(jobDirectory.FullName, ignoreErrors: false);
                     FileSystemHelpers.DeleteDirectorySafe(jobsSpecificDataPath, ignoreErrors: false);
                 }, retries: 3, delayBeforeRetry: 2000);
+
+                ClearJobListCache();
             }
             catch (Exception ex)
             {
@@ -152,20 +256,8 @@ namespace Kudu.Core.Jobs
 
         public void CleanupDeletedJobs()
         {
-            IEnumerable<TJob> jobs = ListJobs();
-            IEnumerable<string> jobNames = jobs.Select(j => j.Name);
-            DirectoryInfoBase jobsDataDirectory = FileSystemHelpers.DirectoryInfoFromDirectoryName(JobsDataPath);
-            if (jobsDataDirectory.Exists)
-            {
-                DirectoryInfoBase[] jobDataDirectories = jobsDataDirectory.GetDirectories("*", SearchOption.TopDirectoryOnly);
-                IEnumerable<string> allJobDataDirectories = jobDataDirectories.Select(j => j.Name);
-                IEnumerable<string> directoriesToRemove = allJobDataDirectories.Except(jobNames, StringComparer.OrdinalIgnoreCase);
-                foreach (string directoryToRemove in directoriesToRemove)
-                {
-                    TraceFactory.GetTracer().Trace("Removed job data path as the job was already deleted: " + directoryToRemove);
-                    FileSystemHelpers.DeleteDirectorySafe(Path.Combine(JobsDataPath, directoryToRemove));
-                }
-            }
+            var jobs = ListJobs(forceRefreshCache: true).Select(j => j.Name);
+            CleanupDeletedJobs(jobs, JobsDataPath, TraceFactory.GetTracer());
         }
 
         private string GetSpecificJobDataPath(string jobName)
@@ -183,7 +275,8 @@ namespace Kudu.Core.Jobs
         {
             var jobs = new List<TJob>();
 
-            IEnumerable<DirectoryInfoBase> jobDirectories = ListJobDirectories(JobsBinariesPath);
+            IEnumerable<DirectoryInfoBase> jobDirectories = ListJobDirectories(JobsBinariesPath)
+                .Where(d => !_excludedJobsNames.Any(e => d.Name.Equals(e, StringComparison.OrdinalIgnoreCase)));
             foreach (DirectoryInfoBase jobDirectory in jobDirectories)
             {
                 TJob job = BuildJob(jobDirectory);
@@ -255,6 +348,13 @@ namespace Kudu.Core.Jobs
                 // Return a job representing an error for no runnable script file found for job
                 if (nullJobOnError)
                 {
+                    if (ex is IOException)
+                    {
+                        // unexpected IOException given simply reading files/folders.
+                        // just rethrow and let the upper layers handle it.
+                        throw;
+                    }
+
                     return null;
                 }
 
@@ -362,14 +462,14 @@ namespace Kudu.Core.Jobs
 
         private static string GetJobSettingsPath(DirectoryInfoBase jobDirectory)
         {
-            return Path.Combine(jobDirectory.FullName, "settings.job");
+            return Path.Combine(jobDirectory.FullName, JobSettings.JobSettingsFileName);
         }
 
         protected abstract void UpdateJob(TJob job);
 
         protected TJobStatus GetStatus<TJobStatus>(string statusFilePath) where TJobStatus : class, IJobStatus, new()
         {
-            return JobLogger.ReadJobStatusFromFile<TJobStatus>(TraceFactory, statusFilePath) ?? new TJobStatus();
+            return JobLogger.ReadJobStatusFromFile<TJobStatus>(Analytics, statusFilePath);
         }
 
         protected Uri BuildJobsUrl(string relativeUrl)
@@ -408,6 +508,15 @@ namespace Kudu.Core.Jobs
             {
                 if (HttpContext.Current == null)
                 {
+                    if (string.IsNullOrEmpty(_lastKnownAppBaseUrlPrefix))
+                    {
+                        var httpHost = System.Environment.GetEnvironmentVariable(Constants.HttpHost);
+                        if (!string.IsNullOrEmpty(httpHost))
+                        {
+                            return "https://{0}".FormatInvariant(httpHost);
+                        }
+                    }
+
                     return _lastKnownAppBaseUrlPrefix;
                 }
 
@@ -438,7 +547,7 @@ namespace Kudu.Core.Jobs
             DirectoryInfoBase jobDirectory = GetJobDirectory(jobName);
             if (!jobDirectory.Exists)
             {
-                throw new JobNotFoundException();
+                throw new JobNotFoundException($"Cannot find '{jobDirectory.FullName}' directory for '{jobName}' triggered job");
             }
 
             return GetJobScriptDirectory(jobDirectory);
@@ -495,6 +604,16 @@ namespace Kudu.Core.Jobs
                         }
                     }
                 }
+
+                foreach (var supportedFileName in scriptHost.SupportedFileNames)
+                {
+                    var supportedFiles = files.Where(f => String.Equals(f.Name, supportedFileName, StringComparison.OrdinalIgnoreCase));
+                    if (supportedFiles.Any())
+                    {
+                        scriptHostFound = scriptHost;
+                        return supportedFiles.First().FullName;
+                    }
+                }
             }
 
             if (secondaryScriptFound != null)
@@ -503,6 +622,31 @@ namespace Kudu.Core.Jobs
             }
 
             return null;
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        protected virtual void Dispose(bool disposing)
+        {
+            // HACK: Next if statement should be removed once ninject will not dispose this class
+            // Since ninject automatically calls dispose we currently disable it
+            if (disposing)
+            {
+                return;
+            }
+            // End of code to be removed
+
+            if (disposing)
+            {
+                if (JobsWatcher != null)
+                {
+                    JobsWatcher.Dispose();
+                    JobsWatcher = null;
+                }
+            }
         }
     }
 }

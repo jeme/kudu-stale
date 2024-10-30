@@ -18,6 +18,8 @@ using Kudu.Services.Infrastructure;
 
 using Environment = System.Environment;
 using System.Diagnostics.CodeAnalysis;
+using Kudu.Services.Diagnostics;
+using Kudu.Core.Helpers;
 
 namespace Kudu.Services.Performance
 {
@@ -38,7 +40,7 @@ namespace Kudu.Services.Performance
         private readonly List<ProcessRequestAsyncResult> _results;
 
         private Dictionary<string, long> _logFiles;
-        private FileSystemWatcher _watcher;
+        private IFileSystemWatcher _watcher;
         private Timer _heartbeat;
         private DateTime _lastTraceTime = DateTime.UtcNow;
         private DateTime _startTime = DateTime.UtcNow;
@@ -74,10 +76,6 @@ namespace Kudu.Services.Performance
             });
 
             string path = ParseRequest(context);
-            if (!Directory.Exists(path))
-            {
-                throw new HttpException((Int32)HttpStatusCode.NotFound, string.Format("The directory name {0} does not exist.", path)); 
-            }
 
             ProcessRequestAsyncResult result = new ProcessRequestAsyncResult(context, cb, extraData);
 
@@ -96,9 +94,13 @@ namespace Kudu.Services.Performance
             {
                 _operationLock.LockOperation(() =>
                 {
-                    var settings = new JsonSettings(Path.Combine(_environment.DiagnosticsPath, Constants.SettingsJsonFile));
-                    settings.SetValue(AzureDriveEnabledKey, true);
-                }, TimeSpan.FromSeconds(30));
+                    // best effort trying to enable application logging
+                    OperationManager.SafeExecute(() =>
+                    {
+                        var diagnostics = new DiagnosticsSettingsManager(Path.Combine(_environment.DiagnosticsPath, Constants.SettingsJsonFile), _tracer);
+                        diagnostics.UpdateSetting(AzureDriveEnabledKey, true);
+                    });
+                }, "Updating diagnostics setting", TimeSpan.FromSeconds(30));
             }
 
             return result;
@@ -115,23 +117,8 @@ namespace Kudu.Services.Performance
         {
             System.Diagnostics.Debug.Assert(_watcher == null, "we only allow one manager per request!");
 
-            if (_watcher == null)
-            {
-                FileSystemWatcher watcher = new FileSystemWatcher(path);
-                watcher.Changed += new FileSystemEventHandler(DoSafeAction<object, FileSystemEventArgs>(OnChanged, "LogStreamManager.OnChanged"));
-                watcher.Deleted += new FileSystemEventHandler(DoSafeAction<object, FileSystemEventArgs>(OnDeleted, "LogStreamManager.OnDeleted"));
-                watcher.Renamed += new RenamedEventHandler(DoSafeAction<object, RenamedEventArgs>(OnRenamed, "LogStreamManager.OnRenamed"));
-                watcher.Error += new ErrorEventHandler(DoSafeAction<object, ErrorEventArgs>(OnError, "LogStreamManager.OnError"));
-                watcher.IncludeSubdirectories = true;
-                watcher.EnableRaisingEvents = true;
-                _watcher = watcher;
-            }
-
-            if (_heartbeat == null)
-            {
-                _heartbeat = new Timer(OnHeartbeat, null, HeartbeatInterval, HeartbeatInterval);
-            }
-
+            // initialize _logFiles before the file watcher since file watcher event handlers reference _logFiles
+            // this mirrors the Reset() where we stop the file watcher before nulling _logFile.
             if (_logFiles == null)
             {
                 var logFiles = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
@@ -153,13 +140,31 @@ namespace Kudu.Services.Performance
 
                 _logFiles = logFiles;
             }
+
+            if (_watcher == null)
+            {
+                IFileSystemWatcher watcher = OSDetector.IsOnWindows() 
+                    ? (IFileSystemWatcher)new FileSystemWatcherWrapper(path, includeSubdirectories: true)
+                    : new NaiveFileSystemWatcher(path, LogFileExtensions);
+                watcher.Changed += new FileSystemEventHandler(DoSafeAction<object, FileSystemEventArgs>(OnChanged, "LogStreamManager.OnChanged"));
+                watcher.Deleted += new FileSystemEventHandler(DoSafeAction<object, FileSystemEventArgs>(OnDeleted, "LogStreamManager.OnDeleted"));
+                watcher.Renamed += new RenamedEventHandler(DoSafeAction<object, RenamedEventArgs>(OnRenamed, "LogStreamManager.OnRenamed"));
+                watcher.Error += new ErrorEventHandler(DoSafeAction<object, ErrorEventArgs>(OnError, "LogStreamManager.OnError"));
+                watcher.Start();
+                _watcher = watcher;
+            }
+
+            if (_heartbeat == null)
+            {
+                _heartbeat = new Timer(OnHeartbeat, null, HeartbeatInterval, HeartbeatInterval);
+            }
         }
 
         private void Reset()
         {
             if (_watcher != null)
             {
-                _watcher.EnableRaisingEvents = false;
+                _watcher.Stop();
                 // dispose is blocked till all change request handled, 
                 // this could lead to deadlock as we share the same lock
                 // http://stackoverflow.com/questions/73128/filesystemwatcher-dispose-call-hangs
@@ -279,24 +284,13 @@ namespace Kudu.Services.Performance
                 return _logPath;
             }
 
-            // in case of application or http log, we ensure directory
-            string firstPath = routePath.Split(new char[] { '/' }, StringSplitOptions.RemoveEmptyEntries)[0];
-            bool isApplication = String.Equals(firstPath, "Application", StringComparison.OrdinalIgnoreCase);
-            if (isApplication)
+            var firstPath = routePath.Split(new char[] { '/' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (string.Equals(firstPath, "Application", StringComparison.OrdinalIgnoreCase))
             {
                 _enableTrace = true;
-                FileSystemHelpers.EnsureDirectory(Path.Combine(_logPath, firstPath));
-            }
-            else
-            {
-                bool isHttp = String.Equals(firstPath, "http", StringComparison.OrdinalIgnoreCase);
-                if (isHttp)
-                {
-                    FileSystemHelpers.EnsureDirectory(Path.Combine(_logPath, firstPath));
-                }
             }
 
-            return Path.Combine(_logPath, routePath);
+            return FileSystemHelpers.EnsureDirectory(Path.Combine(_logPath, routePath));
         }
 
         private static bool MatchFilters(string fileName)
@@ -411,12 +405,10 @@ namespace Kudu.Services.Performance
                         {
                             changes.Add(line);
                         }
-
-                        offset += line.Length;
                     }
 
                     // Adjust offset and return changes
-                    _logFiles[e.FullPath] = offset;
+                    _logFiles[e.FullPath] = reader.BaseStream.Position;
 
                     return changes;
                 }
@@ -447,11 +439,6 @@ namespace Kudu.Services.Performance
 
         private void OnError(object sender, ErrorEventArgs e)
         {
-            using (_tracer.Step("FileSystemWatcher.OnError"))
-            {
-                _tracer.TraceError(e.GetException());
-            }
-
             try
             {
                 lock (_thisLock)
@@ -555,7 +542,12 @@ namespace Kudu.Services.Performance
 
                 _context.Response.Buffer = false;
                 _context.Response.BufferOutput = false;
-                _context.Response.ContentType = "text/plain";
+                // Serving mime type 'text/plain' causes IIS to automatically gzip the response
+                // Changing the type to a custom mime-type fixes this but causes the browser to attempt a download instead of a stream
+                // Hence, change only if the request is coming from the FunctionsPortal
+                _context.Response.ContentType = _context.Request.IsFunctionsPortalRequest()
+                    ? "custom-functions/stream"
+                    : "text/plain";
                 _context.Response.StatusCode = 200;
             }
 

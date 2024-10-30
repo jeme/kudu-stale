@@ -1,11 +1,42 @@
 ﻿@using System.IO
+@using System.Reflection
 @using System.Web.Hosting
 @using Kudu.Services.Web
 @using Kudu.Services
 
 @{
+    // If Kudu home page gets requested with the api-version, we are likely dealing with a call
+    // on the 'ARM bridge' to list 'extensions'. e.g.
+    // /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{site}/extensions?api-version=2015-08-01
+    // Since we can't actually return a list of extensions, return [], which is enough to avoid ARM failures
+    if (Request.QueryString["api-version"] != null)
+    {
+        Response.Write("[]");
+        Response.ContentType = "application/json";
+        Response.End();
+    }
+
     Layout = "~/_Layout.cshtml";
     Page.Title = "Kudu Services";
+
+    string appServiceVersion = GetAppServiceVersion();
+}
+
+@functions {
+    string GetAppServiceVersion()
+    {
+        Assembly assembly;
+        try
+        {
+            assembly = Assembly.ReflectionOnlyLoad("Microsoft.Web.Hosting, Version=7.1.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35");
+            var fileVersionInfo = System.Diagnostics.FileVersionInfo.GetVersionInfo(assembly.Location);
+            return fileVersionInfo.ProductVersion;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }
 
 @section PageHead {
@@ -39,14 +70,29 @@
         </div>
     </div>
 
+    @if (appServiceVersion != null)
+    {
+    <div class="row">
+        <div class="col-xs-2">
+            <strong>Azure App Service</strong>
+        </div>
+        <div>
+            @GetAppServiceVersion()
+        </div>
+    </div>
+    }
+
     <div class="row">
         <div class="col-xs-2">
             <strong>Site up time</strong>
         </div>
         <div>
-            @Kudu.Services.Web.Tracing.TraceModule.UpTime
+            @Kudu.Services.Web.Tracing.TraceModule.UpTime.ToString(@"dd\.hh\:mm\:ss")
         </div>
     </div>
+
+    @if (!Kudu.Core.Helpers.EnvironmentHelper.IsWindowsContainers())
+    {
     <div class="row">
         <div class="col-xs-2">
             <strong>Site folder</strong>
@@ -63,6 +109,14 @@
             @Path.GetTempPath()
         </div>
     </div>
+    }
+
+    @if (Kudu.Core.Helpers.EnvironmentHelper.IsRunFromPackage())
+    {
+    <div class="alert alert-warning" role="alert">
+      Your app is currently in read only mode because you are running from a package file. To make any changes, please update the content in your zip file and WEBSITE_RUN_FROM_PACKAGE app setting.
+    </div>
+    }
 
     <h3>REST API <small>(works best when using a JSON viewer extension)</small></h3>
     <ul>
@@ -73,26 +127,50 @@
             <a href="api/deployments">Deployments</a>
         </li>
         <li>
-            <a href="api/vfs">Files</a>
-        </li>
-        <li>
-            <a href="api/processes">Processes and mini-dumps</a>
-        </li>
-        <li>
-            <a href="api/diagnostics/runtime">Runtime versions</a>
-        </li>
-        <li>
-            Site Extensions: <a href="api/siteextensions">installed</a> | <a href="api/extensionfeed">feed</a>
-        </li>
-        <li>
             <a href="api/scm/info">Source control info</a>
         </li>
         <li>
-            <a href="api/hooks">Web hooks</a>
+            <a href="api/vfs">Files</a>
         </li>
-        <li>
-            WebJobs: <a href="api/webjobs">all</a> | <a href="api/triggeredwebjobs">triggered</a> | <a href="api/continuouswebjobs">continuous</a>
-        </li>
+        @if (Kudu.Core.Helpers.OSDetector.IsOnWindows() && !Kudu.Core.Helpers.EnvironmentHelper.IsWindowsContainers())
+        {
+            <li>
+                <a href="api/logstream">Log streaming</a> (use curl, not browser!)
+            </li>
+            <li>
+                <a href="api/processes">Processes and mini-dumps</a>
+            </li>
+            <li>
+                <a href="api/diagnostics/runtime">Runtime versions</a>
+            </li>
+            <li>
+                Site Extensions: <a href="api/siteextensions">installed</a> | <a href="api/extensionfeed">feed</a>
+            </li>
+            <li>
+                <a href="api/hooks">Web hooks</a>
+            </li>
+            <li>
+                WebJobs: <a href="api/webjobs">all</a> | <a href="api/triggeredwebjobs">triggered</a> | <a href="api/continuouswebjobs">continuous</a>
+            </li>
+            <li>
+            Functions: <a href="api/functions">list</a> | <a href="api/functions/config">host config</a>
+            </li>
+        }
+        else if (Kudu.Core.Helpers.OSDetector.IsOnWindows() && Kudu.Core.Helpers.EnvironmentHelper.IsWindowsContainers())
+        {
+            <li>
+                <a href="api/logstream">Log streaming</a> (use curl, not browser!)
+            </li>
+            <li>
+                <a href="api/logs/docker">Current Container logs</a> (<a href="api/logs/docker/zip">Download as zip</a>)
+            </li>
+        }
+        else
+        {
+            <li>
+                <a href="api/logs/docker">Current Docker logs</a> (<a href="api/logs/docker/zip">Download as zip</a>)
+            </li>
+        }
     </ul>
 
     <h3>More information about Kudu can be found on the <a href="https://github.com/projectkudu/kudu/wiki">wiki</a>.</h3>

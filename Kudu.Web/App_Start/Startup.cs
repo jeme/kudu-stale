@@ -13,8 +13,8 @@ using Kudu.Web.Models;
 using Ninject;
 using Ninject.Web.Common;
 
-[assembly: WebActivator.PreApplicationStartMethod(typeof(Kudu.Web.App_Start.Startup), "Start")]
-[assembly: WebActivator.ApplicationShutdownMethodAttribute(typeof(Kudu.Web.App_Start.Startup), "Stop")]
+[assembly: WebActivatorEx.PreApplicationStartMethod(typeof(Kudu.Web.App_Start.Startup), "Start")]
+[assembly: WebActivatorEx.ApplicationShutdownMethodAttribute(typeof(Kudu.Web.App_Start.Startup), "Stop")]
 
 namespace Kudu.Web.App_Start
 {
@@ -72,7 +72,7 @@ namespace Kudu.Web.App_Start
             kernel.Bind<ICertificateSearcher>().To<CertificateSearcher>();
             kernel.Bind<IKuduContext>().To<KuduContext>();
 
-            //TODO: Instantialte from container instead of factory.
+            //TODO: Instantiate from container instead of factory.
             kernel.Bind<KuduEnvironment>().ToMethod(_ => new KuduEnvironment
             {
                 RunningAgainstLocalKuduService = true,
@@ -82,8 +82,8 @@ namespace Kudu.Web.App_Start
             });
 
 
-            // TODO: Integrate with membership system
-            kernel.Bind<ICredentialProvider>().ToConstant(new BasicAuthCredentialProvider("admin", "kudu"));
+            // TODO: Integrate with membership system            
+            kernel.Bind<ICredentialProvider>( ).ToConstant( configuration.BasicAuthCredential );
             kernel.Bind<IApplicationService>().To<ApplicationService>().InRequestScope();
             kernel.Bind<ISettingsService>().To<SettingsService>();
 

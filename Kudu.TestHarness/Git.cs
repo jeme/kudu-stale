@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Kudu.Client.Deployment;
-using Kudu.Contracts.Settings;
 using Kudu.Core.Infrastructure;
 using Kudu.Core.SourceControl.Git;
 using SystemEnvironment = System.Environment;
@@ -80,7 +80,7 @@ namespace Kudu.TestHarness
             }
             catch (Exception ex)
             {
-                // Swallow exceptions on comit, since things like changing line endings
+                // Swallow exceptions on commit, since things like changing line endings
                 // show up as an error
                 TestTracer.Trace("Commit failed with {0}", ex);
             }
@@ -140,6 +140,14 @@ namespace Kudu.TestHarness
             {
                 // If we're allowed to cache the repository, check if it already exists. If not clone it.
                 string repoName = Path.GetFileNameWithoutExtension(source.Split('/').Last());
+
+                // repo cached per test class to support test parallel run
+                var context = TestContext.Current;
+                if (context != null)
+                {
+                    repoName = GetRepoNamePerContext(context, repoName);
+                }
+
                 cachedPath = Path.Combine(PathHelper.RepositoryCachePath, repoName);
 
                 // Check for the actually .git folder, in case some bogus parent exists but is not an actual repo
@@ -204,13 +212,21 @@ namespace Kudu.TestHarness
             return cachedPath;
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static string GetRepoNamePerContext(TestContext context, string repoName)
+        {
+            var className = context.Test.TestCase.TestMethod.TestClass.Class.Name;
+            return String.Format("{0}_{1}", repoName, className.Substring(className.LastIndexOf(".") + 1));
+        }
+
         public static string CloneToLocal(string cloneUri, string path = null)
         {
             string repositoryPath = path ?? Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
             Directory.CreateDirectory(repositoryPath);
             var exe = new GitExecutable(repositoryPath, idleTimeout: TimeSpan.FromSeconds(3600));
-            exe.SetTraceLevel(2);
-            exe.SetHttpVerbose(true);
+            // reduce noises in log
+            //exe.SetTraceLevel(2);
+            //exe.SetHttpVerbose(true);
             exe.SetSSLNoVerify(true);
             GitExecute(exe, "clone \"{0}\" .", cloneUri);
             return repositoryPath;
@@ -236,19 +252,6 @@ namespace Kudu.TestHarness
             };
         }
 
-        public static TestRepository CreateLocalRepository(string repositoryName)
-        {
-            string targetPath = Path.Combine(PathHelper.ZippedRepositoriesDir, repositoryName + ".zip");
-
-            // Get the path to the repository
-            string zippedPath = PathHelper.GetPath(targetPath);
-
-            // Unzip it
-            ZipUtils.Unzip(zippedPath, PathHelper.LocalRepositoriesDir);
-
-            return new TestRepository(repositoryName);
-        }
-
         public static string GetRepositoryPath(string repositoryPath)
         {
             if (Path.IsPathRooted(repositoryPath))
@@ -257,19 +260,6 @@ namespace Kudu.TestHarness
             }
 
             return Path.Combine(PathHelper.LocalRepositoriesDir, repositoryPath);
-        }
-
-        private static string ResolveGitPath()
-        {
-            string programFiles = SystemEnvironment.GetFolderPath(SystemEnvironment.SpecialFolder.ProgramFilesX86);
-            string path = Path.Combine(programFiles, "Git", "bin", "git.exe");
-
-            if (!File.Exists(path))
-            {
-                throw new InvalidOperationException("Unable to locate git.exe");
-            }
-
-            return path;
         }
 
         private static Executable GetGitExe(string repositoryPath, IDictionary<string, string> environments = null)
@@ -283,8 +273,9 @@ namespace Kudu.TestHarness
 
             // Use a really long idle timeout, since it's mostly meaningful when running on server, not client
             var exe = new GitExecutable(repositoryPath, idleTimeout: TimeSpan.FromSeconds(3600));
-            exe.SetTraceLevel(2);
-            exe.SetHttpVerbose(true);
+            // reduce noises in log
+            //exe.SetTraceLevel(2);
+            //exe.SetHttpVerbose(true);
             exe.SetSSLNoVerify(true);
 
             if (environments != null)

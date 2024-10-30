@@ -23,15 +23,10 @@ namespace Kudu.Core.Jobs
 
         private readonly IWebHooksManager _hooksManager;
 
-        public TriggeredJobsManager(ITraceFactory traceFactory, IEnvironment environment, IDeploymentSettingsManager settings, IAnalytics analytics, IWebHooksManager hooksManager)
-            : base(traceFactory, environment, settings, analytics, Constants.TriggeredPath)
+        public TriggeredJobsManager(string basePath, ITraceFactory traceFactory, IEnvironment environment, IDeploymentSettingsManager settings, IAnalytics analytics, IWebHooksManager hooksManager, IEnumerable<string> excludedJobsNames = null)
+            : base(traceFactory, environment, settings, analytics, Constants.TriggeredPath, basePath, excludedJobsNames)
         {
             _hooksManager = hooksManager;
-        }
-
-        public override IEnumerable<TriggeredJob> ListJobs()
-        {
-            return ListJobsInternal();
         }
 
         public override TriggeredJob GetJob(string jobName)
@@ -61,7 +56,7 @@ namespace Kudu.Core.Jobs
                     if (isLatest)
                     {
                         // The history state is determined by the most recent invocation,
-                        // as previous ones are immutable (beind historical records).
+                        // as previous ones are immutable (being historical records).
                         currentETag = CalculateETag(triggeredJobRun);
                         if (currentETag == etag)
                         {
@@ -130,10 +125,16 @@ namespace Kudu.Core.Jobs
         protected override void UpdateJob(TriggeredJob job)
         {
             job.HistoryUrl = BuildJobsUrl(job.Name + "/history");
-            job.LatestRun = BuildLatestJobRun(job.Name);
+            job.LatestRun = GetLatestJobRun(job.Name);
+
+            string triggeredJobSchedulerLogFilePath = Path.Combine(JobsDataPath, job.Name, TriggeredJobSchedulerLogger.LogFileName);
+            if (FileSystemHelpers.FileExists(triggeredJobSchedulerLogFilePath))
+            {
+                job.SchedulerLogsUrl = BuildVfsUrl("{0}/{1}".FormatInvariant(job.Name, TriggeredJobSchedulerLogger.LogFileName));
+            }
         }
 
-        private TriggeredJobRun BuildLatestJobRun(string jobName)
+        public TriggeredJobRun GetLatestJobRun(string jobName)
         {
             DirectoryInfoBase[] jobRunsDirectories = GetJobRunsDirectories(jobName);
             if (jobRunsDirectories == null || jobRunsDirectories.Length == 0)
@@ -155,7 +156,15 @@ namespace Kudu.Core.Jobs
                 return null;
             }
 
-            return jobHistoryDirectory.GetDirectories("*", SearchOption.TopDirectoryOnly);
+            try
+            {
+                return jobHistoryDirectory.GetDirectories("*", SearchOption.TopDirectoryOnly);
+            }
+            catch (Exception ex)
+            {
+                Analytics.UnexpectedException(ex);
+                return null;
+            }
         }
 
         private TriggeredJobRun BuildJobRun(DirectoryInfoBase jobRunDirectory, string jobName, bool isLatest)
@@ -170,6 +179,11 @@ namespace Kudu.Core.Jobs
             string statusFilePath = Path.Combine(triggeredJobRunPath, TriggeredJobRunLogger.TriggeredStatusFile);
 
             var triggeredJobStatus = GetStatus<TriggeredJobStatus>(statusFilePath);
+
+            if (triggeredJobStatus == null)
+            {
+                return null;
+            }
 
             if (triggeredJobStatus.Status == JobStatus.Running)
             {
@@ -194,6 +208,7 @@ namespace Kudu.Core.Jobs
             {
                 Id = runId,
                 JobName = jobName,
+                Trigger = triggeredJobStatus.Trigger,
                 Status = triggeredJobStatus.Status,
                 StartTime = triggeredJobStatus.StartTime,
                 EndTime = triggeredJobStatus.EndTime,
@@ -215,12 +230,12 @@ namespace Kudu.Core.Jobs
             return null;
         }
 
-        public void InvokeTriggeredJob(string jobName, string arguments)
+        public Uri InvokeTriggeredJob(string jobName, string arguments, string trigger)
         {
             TriggeredJob triggeredJob = GetJob(jobName);
             if (triggeredJob == null)
             {
-                throw new JobNotFoundException();
+                throw new JobNotFoundException($"Cannot find '{jobName}' triggered job");
             }
 
             triggeredJob.CommandArguments = arguments;
@@ -233,11 +248,14 @@ namespace Kudu.Core.Jobs
             TriggeredJobRunner triggeredJobRunner =
                 _triggeredJobRunners.GetOrAdd(
                     jobName,
-                    _ => new TriggeredJobRunner(triggeredJob.Name, Environment, Settings, TraceFactory, Analytics));
+                    _ => new TriggeredJobRunner(triggeredJob.Name, JobsBinariesPath, Environment, Settings, TraceFactory, Analytics));
 
             JobSettings jobSettings = triggeredJob.Settings;
 
-            triggeredJobRunner.StartJobRun(triggeredJob, jobSettings, ReportTriggeredJobFinished);
+            string runId = triggeredJobRunner.StartJobRun(triggeredJob, jobSettings, trigger, ReportTriggeredJobFinished);
+            ClearJobListCache();
+
+            return BuildJobsUrl("{0}/history/{1}".FormatInvariant(jobName, runId));
         }
 
         private async void ReportTriggeredJobFinished(string jobName, string jobRunId)

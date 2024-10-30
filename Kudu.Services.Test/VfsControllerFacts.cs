@@ -8,6 +8,7 @@ using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using System.Web.Http.Hosting;
 using System.Web.Http.Routing;
+using Kudu.Contracts.Settings;
 using Kudu.Contracts.Tracing;
 using Kudu.Core;
 using Kudu.Core.Infrastructure;
@@ -15,7 +16,6 @@ using Kudu.Services.Editor;
 using Kudu.Services.Infrastructure;
 using Moq;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.Services.Test
 {
@@ -143,7 +143,7 @@ namespace Kudu.Services.Test
         }
 
         [Theory]
-        [PropertyData("DeleteItemDeletesFileIfETagMatchesData")]
+        [MemberData("DeleteItemDeletesFileIfETagMatchesData")]
         public async Task DeleteItemDeletesFileIfETagMatches(EntityTagHeaderValue etag)
         {
             // Arrange
@@ -170,11 +170,9 @@ namespace Kudu.Services.Test
         }
 
         [Theory]
-        [PropertyData("MapRouteToLocalPathData")]
+        [MemberData("MapRouteToLocalPathData")]
         public void MapRouteToLocalPathTests(string requestUri, string expected)
         {
-            FileSystemHelpers.Instance = new FileSystem();
-
             // in case of env variable not exist in certain target machine
             var expanded = System.Environment.ExpandEnvironmentVariables(expected);
             if (expanded.Contains("%"))
@@ -241,7 +239,7 @@ namespace Kudu.Services.Test
 
             request.Properties[HttpPropertyKeys.HttpRouteDataKey] = new HttpRouteData(Mock.Of<IHttpRoute>(), new HttpRouteValueDictionary(new { path = routePath }));
             
-            return new VfsController(Mock.Of<ITracer>(), env.Object)
+            return new VfsController(Mock.Of<ITracer>(), env.Object, Mock.Of<IDeploymentSettingsManager>())
             {
                 Request = request
             };

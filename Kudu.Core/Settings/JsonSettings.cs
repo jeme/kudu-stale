@@ -95,7 +95,7 @@ namespace Kudu.Core.Settings
                     writer.Formatting = Formatting.Indented;
                     json.WriteTo(writer);
                 }
-            }, _timeout);
+            }, "Updating setting", _timeout);
         }
 
         public override string ToString()
@@ -106,8 +106,8 @@ namespace Kudu.Core.Settings
 
         private JObject Read()
         {
-            // need to check file exist before aquire lock
-            // since aquire lock will generate lock file, and if folder not exist, will create folder
+            // need to check file exist before acquire lock
+            // since acquire lock will generate lock file, and if folder not exist, will create folder
             if (!FileSystemHelpers.FileExists(_path))
             {
                 return new JObject();
@@ -119,9 +119,17 @@ namespace Kudu.Core.Settings
                 // it is the most optimal where write is infrequent and dirty read is acceptable.
                 using (var reader = new JsonTextReader(new StreamReader(FileSystemHelpers.OpenFile(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))))
                 {
-                    return JObject.Load(reader);
+                    try
+                    {
+                        return JObject.Load(reader);
+                    }
+                    catch (JsonException)
+                    {
+                        // reset if corrupted.
+                        return new JObject();
+                    }
                 }
-            }, _timeout);
+            }, "Getting setting", _timeout);
         }
     }
 }

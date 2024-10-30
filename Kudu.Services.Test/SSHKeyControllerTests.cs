@@ -1,11 +1,9 @@
 ﻿using Kudu.Contracts.Infrastructure;
 using Kudu.Contracts.Tracing;
 using Kudu.Core.SSHKey;
-using Kudu.Services.Infrastructure;
 using Kudu.Services.SSHKey;
 using Moq;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.Services.Test
 {
@@ -22,7 +20,7 @@ namespace Kudu.Services.Test
                          .Verifiable();
             var tracer = Mock.Of<ITracer>();
             var operationLock = new Mock<IOperationLock>();
-            operationLock.Setup(l => l.Lock()).Returns(true);
+            operationLock.Setup(l => l.Lock(It.IsAny<string>())).Returns(true);
             var controller = new SSHKeyController(tracer, sshKeyManager.Object, operationLock.Object);
 
             // Act
@@ -46,7 +44,7 @@ namespace Kudu.Services.Test
                          .Verifiable();
             var tracer = Mock.Of<ITracer>();
             var operationLock = new Mock<IOperationLock>();
-            operationLock.Setup(l => l.Lock()).Returns(true);
+            operationLock.Setup(l => l.Lock(It.IsAny<string>())).Returns(true);
             var controller = new SSHKeyController(tracer, sshKeyManager.Object, operationLock.Object);
 
             // Act

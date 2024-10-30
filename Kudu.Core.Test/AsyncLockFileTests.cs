@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Abstractions;
 using System.Threading;
 using System.Threading.Tasks;
 using Kudu.Contracts.SourceControl;
@@ -27,11 +26,11 @@ namespace Kudu.Core.Test
         }
 
         [Fact]
-        public void AsyncLock_ThrowsIfNotInitialized()
+        public async Task AsyncLock_ThrowsIfNotInitialized()
         {
             string lockFilePath = Path.Combine(PathHelper.TestLockPath, "uninitialized.lock");
             LockFile uninitialized = new LockFile(lockFilePath, NullTracerFactory.Instance);
-            Assert.Throws<InvalidOperationException>(() => uninitialized.LockAsync());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => uninitialized.LockAsync("operationName"));
         }
 
         [Fact]
@@ -40,12 +39,19 @@ namespace Kudu.Core.Test
             for (int i = 0; i < 2; i++)
             {
                 // Acquire
+                var operationName = "operationName" + i;
                 Assert.Equal(false, _lockFile.IsHeld);
-                Assert.Equal(true, _lockFile.Lock());
+                Assert.Equal(true, _lockFile.Lock(operationName));
 
                 // Test
                 Assert.Equal(true, _lockFile.IsHeld);
-                Assert.Equal(false, _lockFile.Lock());
+                Assert.Equal(false, _lockFile.Lock("fail"));
+
+                var lockInfo = _lockFile.LockInfo;
+                Assert.NotNull(lockInfo);
+                Assert.Equal(operationName, lockInfo.OperationName);
+                Assert.NotNull(lockInfo.AcquiredDateTime);
+                Assert.NotNull(lockInfo.StackTrace);
 
                 // Release
                 _lockFile.Release();
@@ -62,7 +68,7 @@ namespace Kudu.Core.Test
 
             Parallel.For(0, MaxCount, async cnt =>
             {
-                await _lockFile.LockAsync();
+                await _lockFile.LockAsync("operationName");
 
                 // We are now within the lock
                 await Task.Delay(5);
@@ -76,7 +82,7 @@ namespace Kudu.Core.Test
                 }
             });
 
-            done.WaitOne();
+            Assert.True(done.WaitOne(10000), "lock timeout!");
             Assert.Equal(MaxCount, count);
         }
 
@@ -96,7 +102,7 @@ namespace Kudu.Core.Test
                 List<Task> lockRequests = new List<Task>();
                 for (int cnt = 0; cnt < maxCount; cnt++)
                 {
-                    Task lockRequest = _lockFile.LockAsync();
+                    Task lockRequest = _lockFile.LockAsync("operationName");
                     lockRequests.Add(lockRequest);
                 }
 
@@ -116,10 +122,10 @@ namespace Kudu.Core.Test
         }
 
         [Fact]
-        public void LockAsync_ThrowsAfterTerminateAsyncLocks()
+        public async Task LockAsync_ThrowsAfterTerminateAsyncLocks()
         {
             _lockFile.TerminateAsyncLocks();
-            Assert.Throws<InvalidOperationException>(() => _lockFile.LockAsync());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => _lockFile.LockAsync("operationName"));
         }
     }
 }

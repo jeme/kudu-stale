@@ -1,21 +1,18 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Kudu.Contracts.Settings;
-using Kudu.Core.Tracing;
 using System.IO;
+using System.Linq;
+using Kudu.Contracts.Settings;
+using Kudu.Core.Helpers;
 using Kudu.Core.Infrastructure;
+using Kudu.Core.Tracing;
 using LibGit2Sharp;
-using Kudu.Contracts.Tracing;
-using System.Text.RegularExpressions;
 
 namespace Kudu.Core.SourceControl.Git
 {
     public class LibGit2SharpRepository : IGitRepository
     {
-        private const string _remoteAlias = "external";
+        private const string _remoteAlias = GitExeRepository.RemoteAlias;
         private readonly ITraceFactory _tracerFactory;
         private readonly IDeploymentSettingsManager _settings;
         private readonly GitExeRepository _legacyGitExeRepository;
@@ -59,14 +56,18 @@ namespace Kudu.Core.SourceControl.Git
                 var dotGitPath = LibGit2Sharp.Repository.Init(RepositoryPath);
                 using (var repo = new LibGit2Sharp.Repository(dotGitPath))
                 {
-                    repo.Config.Set("core.autocrlf", true);
+                    repo.Config.Set("core.autocrlf", OSDetector.IsOnWindows());
 
                     // This speeds up git operations like 'git checkout', especially on slow drives like in Azure
                     repo.Config.Set("core.preloadindex", true);
 
                     repo.Config.Set("user.name", _settings.GetGitUsername());
-
                     repo.Config.Set("user.email", _settings.GetGitEmail());
+
+                    // This is needed to make lfs work
+                    repo.Config.Set("filter.lfs.clean", "git-lfs clean %f");
+                    repo.Config.Set("filter.lfs.smudge", "git-lfs smudge %f");
+                    repo.Config.Set("filter.lfs.required", true);
 
                     using (tracer.Step("Configure git server"))
                     {
@@ -113,7 +114,7 @@ fi" + "\n";
                     string content = @"#!/bin/sh
 read i
 echo $i > pushinfo
-" + KnownEnvironment.KUDUCOMMAND + "\n";
+" + KnownEnvironment.KUDUCOMMAND + "\r\n";
 
                     File.WriteAllText(PostReceiveHookPath, content);
                 }
@@ -162,7 +163,9 @@ echo $i > pushinfo
                 {
                     DetectRenamesInIndex = false,
                     DetectRenamesInWorkDir = false
-                }).Select(c => c.FilePath);
+                })
+                .Where(c => c.State != FileStatus.Ignored)
+                .Select(c => c.FilePath);
 
                 if (!changes.Any())
                 {
@@ -207,6 +210,7 @@ echo $i > pushinfo
 
         public void FetchWithoutConflict(string remoteUrl, string branchName)
         {
+            var tracer = _tracerFactory.GetTracer();
             try
             {
                 using (var repo = new LibGit2Sharp.Repository(RepositoryPath))
@@ -214,46 +218,106 @@ echo $i > pushinfo
                     var trackedBranchName = string.Format("{0}/{1}", _remoteAlias, branchName);
                     var refSpec = string.Format("+refs/heads/{0}:refs/remotes/{1}", branchName, trackedBranchName);
 
-                    // Configure the remote
-                    var remote = repo.Network.Remotes.Add(_remoteAlias, remoteUrl, refSpec);
-
-                    // This will only retrieve the "master"
-                    repo.Network.Fetch(remote);
-
-                    // Optionally set up the branch tracking configuration
-                    var trackedBranch = repo.Branches[trackedBranchName];
-                    if (trackedBranch == null)
+                    LibGit2Sharp.Remote remote = null;
+                    using (tracer.Step("LibGit2SharpRepository Add Remote"))
                     {
-                        throw new BranchNotFoundException(branchName, null);
+                        // only add if matching remote does not exist
+                        // to address strange LibGit2SharpRepository remove and add remote issue (remote already exists!)
+                        remote = repo.Network.Remotes[_remoteAlias];
+                        if (remote != null &&
+                            string.Equals(remote.Url, remoteUrl, StringComparison.OrdinalIgnoreCase) &&
+                            remote.FetchRefSpecs.Any(rf => string.Equals(rf.Specification, refSpec, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            tracer.Trace("Git remote exists");
+                        }
+                        else
+                        {
+                            // Remove it if it already exists (does not throw if it doesn't)
+                            repo.Network.Remotes.Remove(_remoteAlias);
+
+                            // Configure the remote
+                            remote = repo.Network.Remotes.Add(_remoteAlias, remoteUrl, refSpec);
+
+                            tracer.Trace("Git remote added");
+                        }
                     }
-                    var branch = repo.Branches[branchName] ?? repo.CreateBranch(branchName, trackedBranch.Tip);
-                    repo.Branches.Update(branch,
-                        b => b.TrackedBranch = trackedBranch.CanonicalName);
 
-                    //Update the raw ref to point the head of branchName to the latest fetched branch
-                    UpdateRawRef(string.Format("refs/heads/{0}", branchName), trackedBranchName);
+                    using (tracer.Step("LibGit2SharpRepository Fetch"))
+                    {
+                        // usercred need to be specify explicitly.
+                        if (Uri.TryCreate(remoteUrl, UriKind.Absolute, out Uri uri)
+                            && (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) || string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                            && !string.IsNullOrEmpty(uri.UserInfo))
+                        {
+                            var parts = uri.UserInfo.Split(':');
+                            var creds = new UsernamePasswordCredentials 
+                            { 
+                                Username = parts[0],
+                                Password = parts.Length > 1 ? parts[1] : string.Empty
+                            };
 
-                    // Now checkout out our branch, which points to the right place
-                    Update(branchName);
+                            repo.Network.Fetch(remote, new FetchOptions { CredentialsProvider = delegate { return creds; } });
+                        }
+                        else
+                        {
+                            // This will only retrieve the "master"
+                            repo.Network.Fetch(remote);
+                        }
+                    }
+                    
+                    using (tracer.Step("LibGit2SharpRepository Update"))
+                    {
+                        // Are we fetching a tag?
+                        if (branchName.Trim().StartsWith("refs/tags/", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var trackedTag = repo.Tags[branchName];
+                            if (trackedTag == null)
+                            {
+                                throw new BranchNotFoundException(branchName, null);
+                            }
+
+                            // Update the raw ref to point to the tag
+                            UpdateRawRef(branchName, branchName);
+
+                            // Now checkout out the tag, which points to the right place
+                            Update(branchName);
+                        }
+                        else
+                        {
+                            // Optionally set up the branch tracking configuration
+                            var trackedBranch = repo.Branches[trackedBranchName];
+                            if (trackedBranch == null)
+                            {
+                                throw new BranchNotFoundException(branchName, null);
+                            }
+
+                            var branch = repo.Branches[branchName] ?? repo.CreateBranch(branchName, trackedBranch.Tip);
+                            repo.Branches.Update(branch,
+                                b => b.TrackedBranch = trackedBranch.CanonicalName);
+
+                            // Update the raw ref to point the head of branchName to the latest fetched branch
+                            UpdateRawRef(string.Format("refs/heads/{0}", branchName), trackedBranchName);
+
+                            // Now checkout out our branch, which points to the right place
+                            Update(branchName);
+                        }
+                    }
                 }
             }
             catch (LibGit2SharpException exception)
             {
-                if (exception.Message.Equals("Unsupported URL protocol"))
+                // LibGit2Sharp doesn't support SSH yet. Use GitExeRepository
+                // LibGit2Sharp only supports smart Http protocol
+                if (exception.Message.Equals("Unsupported URL protocol") ||
+                    exception.Message.Equals("Received unexpected content-type"))
                 {
-                    // LibGit2Sharp doesn't support SSH yet. Use GitExeRepository
+                    tracer.TraceWarning("LibGit2SharpRepository fallback to git.exe due to {0}", exception.Message);
+
                     _legacyGitExeRepository.FetchWithoutConflict(remoteUrl, branchName);
                 }
                 else
                 {
                     throw;
-                }
-            }
-            finally
-            {
-                using (var repo = new LibGit2Sharp.Repository(RepositoryPath))
-                {
-                    repo.Network.Remotes.Remove(_remoteAlias);
                 }
             }
         }
@@ -316,7 +380,7 @@ echo $i > pushinfo
 
         public IEnumerable<string> ListFiles(string path, SearchOption searchOption, params string[] lookupList)
         {
-            path = PathUtility.CleanPath(path);
+            path = PathUtilityFactory.Instance.CleanPath(path);
 
             if (!FileSystemHelpers.IsSubfolder(RepositoryPath, path))
             {

@@ -1,8 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Web;
-using Kudu.Contracts.Tracing;
+using Kudu.Contracts.Settings;
+using Kudu.Contracts.SourceControl;
 using Kudu.Core.Infrastructure;
 using Kudu.Core.Tracing;
 
@@ -15,31 +15,32 @@ namespace Kudu.Core.SourceControl
     /// </summary>
     public class NullRepository : IRepository
     {
-        private readonly IEnvironment _environment;
-        private readonly ITraceFactory _traceFactory;
-        private readonly HttpContextBase _httpContext;
-        private readonly string _changeSetKey;
+        // for null repo, good enough for last known changeset
+        private static ChangeSet _latestChangeSet;
 
-        public NullRepository(IEnvironment environment, ITraceFactory traceFactory, HttpContextBase httpContext)
+        private readonly string _path;
+        private readonly ITraceFactory _traceFactory;
+        private readonly string _commitId;
+
+        public NullRepository(string path, ITraceFactory traceFactory, string commitId = null)
         {
-            _environment = environment;
+            _path = path;
             _traceFactory = traceFactory;
-            _httpContext = httpContext;
-            _changeSetKey = Path.Combine(_environment.RepositoryPath, "changeset");
+            _commitId = commitId;
         }
 
         public string CurrentId
         {
             get
             {
-                var changeSet = (ChangeSet)_httpContext.Items[_changeSetKey];
+                var changeSet = _latestChangeSet;
                 return changeSet == null ? null : changeSet.Id;
             }
         }
 
         public string RepositoryPath
         {
-            get { return _environment.RepositoryPath; }
+            get { return _path; }
         }
 
         public RepositoryType RepositoryType
@@ -59,16 +60,25 @@ namespace Kudu.Core.SourceControl
 
         public ChangeSet GetChangeSet(string id)
         {
-            var changeSet = (ChangeSet)_httpContext.Items[_changeSetKey];
+            var message = "No commit was performed.";
+            var changeSet = _latestChangeSet;
             if (changeSet != null)
             {
                 if (id == changeSet.Id || id == "master" || id == "HEAD")
                 {
                     return changeSet;
                 }
+
+                var scmType = System.Environment.GetEnvironmentVariable(SettingsKeys.ScmType);
+                if (string.Equals(ScmType.None, scmType, StringComparison.OrdinalIgnoreCase))
+                {
+                    return changeSet;
+                }
+
+                message = string.Format("ChangeSetId({0}) does not match {1}, 'master' or 'HEAD'", id, changeSet.Id);
             }
 
-            throw new InvalidOperationException();
+            throw new InvalidOperationException(message);
         }
 
         public void AddFile(string path)
@@ -81,7 +91,7 @@ namespace Kudu.Core.SourceControl
             var tracer = _traceFactory.GetTracer();
             using (tracer.Step("None repository commit"))
             {
-                var changeSet = new ChangeSet(Guid.NewGuid().ToString("N"),
+                var changeSet = new ChangeSet(!string.IsNullOrEmpty(_commitId) ? _commitId : Guid.NewGuid().ToString("N"),
                                               !string.IsNullOrEmpty(authorName) ? authorName : Resources.Deployment_UnknownValue,
                                               !string.IsNullOrEmpty(emailAddress) ? emailAddress : Resources.Deployment_UnknownValue,
                                               message ?? Resources.Deployment_UnknownValue,
@@ -90,12 +100,12 @@ namespace Kudu.Core.SourceControl
                 // Does not support rollback
                 changeSet.IsReadOnly = true;
 
-                // The lifetime is per request
-                _httpContext.Items[_changeSetKey] = changeSet;
+                // Only maintain latest changeSet
+                _latestChangeSet = changeSet;
 
                 tracer.Trace("Commit id: " + changeSet.Id, new Dictionary<string, string>
                 {
-                    { "Messsage", changeSet.Message },
+                    { "Message", changeSet.Message },
                     { "AuthorName", changeSet.AuthorName },
                     { "AuthorEmail", changeSet.AuthorEmail }
                 });
@@ -126,7 +136,7 @@ namespace Kudu.Core.SourceControl
 
         public void Clean()
         {
-            _httpContext.Items.Remove(_changeSetKey);
+            _latestChangeSet = null;
         }
 
         public void UpdateSubmodules()

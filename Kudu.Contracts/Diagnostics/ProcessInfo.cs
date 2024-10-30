@@ -15,11 +15,14 @@ namespace Kudu.Core.Diagnostics
         public int Id { get; set; }
 
         [JsonIgnore]
-        [SuppressMessage("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes", Justification = "to provide ARM spceific name")]
+        [SuppressMessage("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes", Justification = "to provide ARM specific name")]
         string INamedObject.Name { get { return Id.ToString(); } }
 
         [JsonProperty(PropertyName = "name")]
         public string Name { get; set; }
+
+        [JsonProperty(PropertyName = "machineName")]
+        public string MachineName { get; set; }
 
         [JsonProperty(PropertyName = "href", DefaultValueHandling = DefaultValueHandling.Ignore)]
         public Uri Href { get; set; }
@@ -27,8 +30,14 @@ namespace Kudu.Core.Diagnostics
         [JsonProperty(PropertyName = "minidump", DefaultValueHandling = DefaultValueHandling.Ignore)]
         public Uri MiniDump { get; set; }
 
-        [JsonProperty(PropertyName = "gcdump", DefaultValueHandling = DefaultValueHandling.Ignore)]
-        public Uri GCDump { get; set; }
+        [JsonProperty(PropertyName = "is_profile_running", DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public bool IsProfileRunning { get; set; }
+
+        [JsonProperty(PropertyName = "is_iis_profile_running", DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public bool IsIisProfileRunning { get; set; }
+
+        [JsonProperty(PropertyName = "iis_profile_timeout_in_seconds", DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public double IisProfileTimeoutInSeconds { get; set; }
 
         [JsonProperty(PropertyName = "parent", DefaultValueHandling = DefaultValueHandling.Ignore)]
         public Uri Parent { get; set; }

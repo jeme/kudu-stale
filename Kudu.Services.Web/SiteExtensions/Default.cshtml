@@ -4,7 +4,7 @@
 }
 
 @section PageHead {
-    <link href="//netdna.bootstrapcdn.com/font-awesome/4.0.3/css/font-awesome.css" rel="stylesheet" />
+    <link href="//functionscdn.azureedge.net/public/kudu/font-awesome/4.0.2/css/font-awesome.css" rel="stylesheet" />
     <link href="../Content/Styles/SiteExtensions.css" rel="stylesheet" />
 }
 
@@ -37,6 +37,11 @@
                 </button>
             </form>
         </div>
+    </div>
+
+    <div class="alert alert-warning alert-dismissable" id="extensionsTermsAndConditions">        
+        <span id="extensionsTermsAndConditionsText">By installing the site-extension you agree to nuget.org terms of service 
+        <a href="https://www.nuget.org/policies/Terms" target="_blank">NuGet Gallery | Terms and Conditions</a></span>
     </div>
 
     <div class="alert alert-success alert-dismissable" id="successNotification" aria-hidden="true">
@@ -203,7 +208,7 @@
                     <strong data-bind="text: title"></strong> from
                     <strong data-bind="text: authors"></strong>
                     and that the <a data-bind="attr: {href: license_url, target: '_blank'}">legal terms</a> of <strong data-bind="text: authors"></strong> apply to it.
-                    Microsoft does not provide rights for third-party software.
+                    Microsoft does not guarantee the contribution or purport to grant rights to it.
                 </span>
             </div>
             <div class="modal-footer">

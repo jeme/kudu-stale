@@ -8,7 +8,6 @@ using Kudu.Core.SourceControl;
 using Kudu.Core.Tracing;
 using Moq;
 using Xunit;
-using Xunit.Extensions;
 
 namespace Kudu.Core.Test
 {
@@ -33,16 +32,15 @@ namespace Kudu.Core.Test
         {
             // arrange
             var settings = MockSettings();
-            var environment = MockEnviroment(@"x:\site", settings.Object);
+            var repoPath = @"x:\site\repository";
             var traceFactory = MockTraceFactory();
-            var httpContext = MockHttpContext();
 
             // test
-            var repository = new NullRepository(environment.Object, traceFactory.Object, httpContext.Object);
+            var repository = new NullRepository(repoPath, traceFactory.Object);
 
             // Assert
             Assert.Equal(RepositoryType.None, repository.RepositoryType);
-            Assert.Equal(environment.Object.RepositoryPath, repository.RepositoryPath);
+            Assert.Equal(repoPath, repository.RepositoryPath);
             Assert.Null(repository.CurrentId);
             Assert.Throws<InvalidOperationException>(() => repository.GetChangeSet("dummy"));
             Assert.Throws<InvalidOperationException>(() => repository.GetChangeSet("master"));
@@ -85,7 +83,7 @@ namespace Kudu.Core.Test
             return settings;
         }
 
-        private Mock<IEnvironment> MockEnviroment(string sitePath, IDeploymentSettingsManager settings)
+        private Mock<IEnvironment> MockEnvironment(string sitePath, IDeploymentSettingsManager settings)
         {
             var environment = new Mock<IEnvironment>(MockBehavior.Strict);
 

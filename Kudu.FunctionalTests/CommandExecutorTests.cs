@@ -2,11 +2,12 @@
 using System.Collections.Generic;
 using Kudu.Core;
 using Kudu.TestHarness;
+using Kudu.TestHarness.Xunit;
 using Xunit;
 
 namespace Kudu.FunctionalTests
 {
-    [TestHarnessClassCommand]
+    [KuduXunitTestClass]
     public class CommandExecutorTests
     {
         [Fact]
@@ -80,9 +81,25 @@ namespace Kudu.FunctionalTests
                 tests.Add(commandTestSettings);
 
                 // Make sure 'npm -g' installs to AppData (and not Program Files)
+                // If this fails, check your <applicationPoolDefaults>, per https://github.com/projectkudu/kudu/wiki/Getting-started
                 commandTestSettings = new CommandTestSettings("npm install -g underscore --quiet");
                 commandTestSettings.ExpectedResult.Output = "AppData";
                 tests.Add(commandTestSettings);
+
+                // Test mv
+                var batches = new[]
+                {
+                    "if exist \"%HOME%\\LogFiles\\xyz.txt\" del \"%HOME%\\LogFiles\\*.txt\" /q",
+                    "touch \"%HOME%\\LogFiles\\abc.txt\"",
+                    "mv \"%HOME%\\LogFiles\\abc.txt\" \"%HOME%\\LogFiles\\xyz.txt\"",
+                    "if exist \"%HOME%\\LogFiles\\xyz.txt\" del \"%HOME%\\LogFiles\\*.txt\" /q"
+                };
+
+                foreach (var cmd in batches)
+                {
+                    commandTestSettings = new CommandTestSettings(cmd);
+                    tests.Add(commandTestSettings);
+                }
 
                 foreach (CommandTestSettings test in tests)
                 {
@@ -133,6 +150,11 @@ namespace Kudu.FunctionalTests
                 WorkingDirectory = ".";
 
                 Command = command;
+            }
+
+            public override string ToString()
+            {
+                return $"Command: '{Command}'";
             }
         }
     }

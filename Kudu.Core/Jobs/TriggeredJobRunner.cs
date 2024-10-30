@@ -15,8 +15,8 @@ namespace Kudu.Core.Jobs
         private ManualResetEvent _currentRunningJobWaitHandle;
         private readonly LockFile _lockFile;
 
-        public TriggeredJobRunner(string jobName, IEnvironment environment, IDeploymentSettingsManager settings, ITraceFactory traceFactory, IAnalytics analytics)
-            : base(jobName, Constants.TriggeredPath, environment, settings, traceFactory, analytics)
+        public TriggeredJobRunner(string jobName, string basePath, IEnvironment environment, IDeploymentSettingsManager settings, ITraceFactory traceFactory, IAnalytics analytics)
+            : base(jobName, Constants.TriggeredPath, basePath, environment, settings, traceFactory, analytics)
         {
             _lockFile = BuildTriggeredJobRunnerLockFile(JobDataPath, TraceFactory);
         }
@@ -28,7 +28,7 @@ namespace Kudu.Core.Jobs
 
         public static LockFile BuildTriggeredJobRunnerLockFile(string jobDataPath, ITraceFactory traceFactory)
         {
-            return new LockFile(Path.Combine(jobDataPath, "triggeredJob.lock"), traceFactory);
+            return new LockFile(Path.Combine(jobDataPath, "triggeredJob.lock"), traceFactory, ensureLock: true);
         }
 
         protected override string JobEnvironmentKeyPrefix
@@ -41,7 +41,7 @@ namespace Kudu.Core.Jobs
             get { return Settings.GetWebJobsIdleTimeout(); }
         }
 
-        public void StartJobRun(TriggeredJob triggeredJob, JobSettings jobSettings, Action<string, string> reportAction)
+        public string StartJobRun(TriggeredJob triggeredJob, JobSettings jobSettings, string trigger, Action<string, string> reportAction)
         {
             JobSettings = jobSettings;
 
@@ -50,12 +50,12 @@ namespace Kudu.Core.Jobs
                 throw new WebJobsStoppedException();
             }
 
-            if (!_lockFile.Lock())
+            if (!_lockFile.Lock(String.Format("Starting {0} triggered WebJob", triggeredJob.Name)))
             {
                 throw new ConflictException();
             }
 
-            TriggeredJobRunLogger logger = TriggeredJobRunLogger.LogNewRun(triggeredJob, Environment, TraceFactory, Settings);
+            TriggeredJobRunLogger logger = TriggeredJobRunLogger.LogNewRun(triggeredJob, trigger, Environment, TraceFactory, Settings);
             Debug.Assert(logger != null);
 
             try
@@ -68,12 +68,14 @@ namespace Kudu.Core.Jobs
 
                 _currentRunningJobWaitHandle = new ManualResetEvent(false);
 
+                var tracer = TraceFactory.GetTracer();
+                var step = tracer.Step("Run {0} {1}", triggeredJob.JobType, triggeredJob.Name);
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
                     try
                     {
                         InitializeJobInstance(triggeredJob, logger);
-                        RunJobInstance(triggeredJob, logger, logger.Id);
+                        RunJobInstance(triggeredJob, logger, logger.Id, trigger, tracer);
                     }
                     catch (Exception ex)
                     {
@@ -81,8 +83,9 @@ namespace Kudu.Core.Jobs
                     }
                     finally
                     {
-                        logger.ReportEndRun();
                         _lockFile.Release();
+                        logger.ReportEndRun();
+                        step.Dispose();
                         reportAction(triggeredJob.Name, logger.Id);
                         _currentRunningJobWaitHandle.Set();
                     }
@@ -94,6 +97,9 @@ namespace Kudu.Core.Jobs
                 _lockFile.Release();
                 throw;
             }
+
+            // Return the run ID
+            return logger.Id;
         }
 
         protected override string RefreshShutdownNotificationFilePath(string jobName, string jobsTypePath)

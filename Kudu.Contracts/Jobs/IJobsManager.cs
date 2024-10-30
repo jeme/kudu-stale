@@ -1,11 +1,14 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace Kudu.Contracts.Jobs
 {
     public interface IJobsManager<TJob> where TJob : JobBase, new()
     {
-        IEnumerable<TJob> ListJobs();
+        IEnumerable<TJob> ListJobs(bool forceRefreshCache);
+
+        bool HasJob(string jobName);
 
         TJob GetJob(string jobName);
 
@@ -24,5 +27,7 @@ namespace Kudu.Contracts.Jobs
         void SyncExternalJobs(string sourcePath, string sourceName);
 
         void CleanupExternalJobs(string sourceName);
+
+        void RegisterExtraEventHandlerForFileChange(Action<string> action);
     }
 }

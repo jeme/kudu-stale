@@ -21,10 +21,10 @@ namespace Kudu.Core.Tracing
             TraceLevelKey,
             "Max-Forwards",
             "X-LiveUpgrade",
-            "X-ARR-LOG-ID",
             "DISGUISED-HOST",
             "X-Original-URL",
             "X-Forwarded-For",
+            "X-MS-CLIENT-PRINCIPAL-NAME",
             "X-ARR-SSL"
         },
         StringComparer.OrdinalIgnoreCase);
@@ -124,6 +124,32 @@ namespace Kudu.Core.Tracing
             // Skip tracing direct browsers requests.
             return (request.UserAgent.StartsWith("Mozilla", StringComparison.OrdinalIgnoreCase) ||
                     request.UserAgent.StartsWith("Opera", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // From System.Web.Mvc.AjaxRequestExtensions.IsAjaxRequest
+        public static bool IsAjaxRequest(HttpRequestBase request)
+        {
+            return String.Equals("XMLHttpRequest", request.Headers["X-REQUESTED-WITH"], StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool MismatchedHostReferer(HttpRequestBase request)
+        {
+            var referer = request.Headers["Referer"];
+
+            // referer is not present if already same origin
+            if (String.IsNullOrEmpty(referer))
+            {
+                return false;
+            }
+
+            // referer can be invalid uri (such as literally 'null' in some case)
+            Uri refererUri;
+            if (!Uri.TryCreate(referer, UriKind.Absolute, out refererUri))
+            {
+                return true;
+            }
+
+            return !String.Equals(request.Url.Host, refererUri.Host, StringComparison.OrdinalIgnoreCase);
         }
 
         private static TraceLevel GetTraceLevel(IDictionary<string, string> attributes)

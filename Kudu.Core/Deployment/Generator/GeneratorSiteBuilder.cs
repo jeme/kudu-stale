@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Kudu.Contracts.Settings;
+using Kudu.Core.Helpers;
 using Kudu.Core.Tracing;
 
 namespace Kudu.Core.Deployment.Generator
@@ -36,7 +37,7 @@ namespace Kudu.Core.Deployment.Generator
             {
                 GenerateScript(context, buildLogger);
                 string deploymentScriptPath = String.Format("\"{0}\"", DeploymentManager.GetCachedDeploymentScriptPath(Environment));
-                RunCommand(context, deploymentScriptPath);
+                RunCommand(context, deploymentScriptPath, context.IgnoreManifest);
                 tcs.SetResult(null);
             }
             catch (Exception ex)
@@ -64,7 +65,7 @@ namespace Kudu.Core.Deployment.Generator
             {
                 using (context.Tracer.Step("Generating deployment script"))
                 {
-                    var scriptGenerator = ExternalCommandFactory.BuildExternalCommandExecutable(RepositoryPath, context.OutputPath, buildLogger);
+                    var scriptGenerator = ExternalCommandFactory.BuildExternalCommandExecutable(RepositoryPath, context.OutputPath, buildLogger, TargetFramework);
 
                     // Set home path to the user profile so cache directories created by azure-cli are created there
                     scriptGenerator.SetHomePath(System.Environment.GetEnvironmentVariable("APPDATA"));
@@ -78,6 +79,13 @@ namespace Kudu.Core.Deployment.Generator
                         buildLogger.Log(Resources.Log_DeploymentScriptGeneratorCommand, scriptGeneratorCommandArguments);
 
                         scriptGenerator.ExecuteWithProgressWriter(buildLogger, context.Tracer, scriptGeneratorCommand);
+
+                        if (!OSDetector.IsOnWindows())
+                        {
+                            // Kuduscript output is typically not given execute permission, so add it
+                            var deploymentScriptPath = DeploymentManager.GetCachedDeploymentScriptPath(Environment);
+                            PermissionHelper.Chmod("ugo+x", deploymentScriptPath, Environment, DeploymentSettings, buildLogger);
+                        }
 
                         CacheDeploymentScript(scriptGeneratorCommandArguments, context);
                     }
@@ -134,7 +142,7 @@ namespace Kudu.Core.Deployment.Generator
 
                 string[] cacheKeyFileContent = File.ReadAllLines(cacheKeyFilePath).Where(line => !String.IsNullOrEmpty(line)).ToArray();
 
-                // Make sure the cache key file contains exacly 2 lines and the first one is the same as the current running kudu version
+                // Make sure the cache key file contains exactly 2 lines and the first one is the same as the current running kudu version
                 if (cacheKeyFileContent.Length != 2 || cacheKeyFileContent[0] != KuduVersion)
                 {
                     return false;
@@ -169,7 +177,14 @@ namespace Kudu.Core.Deployment.Generator
         {
             get
             {
-                return Path.Combine(Environment.NodeModulesPath, ".bin", "kuduscript.cmd");
+                if (OSDetector.IsOnWindows())
+                {
+                    return Path.Combine(Environment.NodeModulesPath, ".bin", "kuduscript.cmd");
+                }
+                else
+                {
+                    return Path.Combine(Environment.NodeModulesPath, ".bin", "kuduscript");
+                }
             }
         }
     }

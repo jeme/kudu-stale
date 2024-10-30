@@ -22,7 +22,7 @@ namespace Kudu.Core.Tracing
             _depth = depth;
 
             // Initialize cleanup timer
-            CleanupHelper.Initialize(path);
+            OperationManager.SafeExecute(() => CleanupHelper.Initialize(path));
         }
 
         public TraceLevel TraceLevel
@@ -32,7 +32,16 @@ namespace Kudu.Core.Tracing
 
         public IDisposable Step(string title, IDictionary<string, string> attributes)
         {
-            _logFile.WriteLine(title, attributes, _depth);
+            try
+            {
+                _logFile.WriteLine(title, attributes, _depth);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine(ex);
+                return DisposableAction.Noop;
+            }
+
             ++_depth;
 
             return new DisposableAction(() =>
@@ -51,7 +60,14 @@ namespace Kudu.Core.Tracing
 
         public void Trace(string message, IDictionary<string, string> attributes)
         {
-            _logFile.WriteLine(message, attributes, _depth);
+            try
+            {
+                _logFile.WriteLine(message, attributes, _depth);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine(ex);
+            }
         }
 
         private class LogFileHelper
@@ -191,7 +207,7 @@ namespace Kudu.Core.Tracing
                         {
                             foreach (FileInfoBase child in parent.GetFiles("*.txt", SearchOption.AllDirectories))
                             {
-                                _files.Add(child.FullName, child.LastWriteTimeUtc.AddMinutes(FileStaleMinutes));
+                                _files[child.FullName] = child.LastWriteTimeUtc.AddMinutes(FileStaleMinutes);
                             }
 
                             EnsureTimer();
@@ -206,7 +222,7 @@ namespace Kudu.Core.Tracing
             {
                 lock (_lock)
                 {
-                    _files.Add(path, DateTime.UtcNow.AddMilliseconds(TimerInterval));
+                    _files[path] = DateTime.UtcNow.AddMilliseconds(TimerInterval);
 
                     EnsureTimer();
                 }

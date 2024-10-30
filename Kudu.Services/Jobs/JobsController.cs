@@ -1,4 +1,12 @@
-﻿using System;
+﻿using Kudu.Contracts;
+using Kudu.Contracts.Jobs;
+using Kudu.Contracts.Tracing;
+using Kudu.Core.Hooks;
+using Kudu.Core.Infrastructure;
+using Kudu.Core.Jobs;
+using Kudu.Core.Tracing;
+using Kudu.Services.Arm;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -7,15 +15,6 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using System.Web.Http;
-using System.Web.Http.ModelBinding;
-using Kudu.Contracts;
-using Kudu.Contracts.Jobs;
-using Kudu.Contracts.Tracing;
-using Kudu.Core.Hooks;
-using Kudu.Core.Infrastructure;
-using Kudu.Core.Jobs;
-using Kudu.Core.Tracing;
-using Kudu.Services.Arm;
 
 namespace Kudu.Services.Jobs
 {
@@ -36,8 +35,8 @@ namespace Kudu.Services.Jobs
         [HttpGet]
         public HttpResponseMessage ListAllJobs()
         {
-            IEnumerable<ContinuousJob> continuousJobs = _continuousJobsManager.ListJobs();
-            IEnumerable<TriggeredJob> triggeredJobs = _triggeredJobsManager.ListJobs();
+            IEnumerable<ContinuousJob> continuousJobs = _continuousJobsManager.ListJobs(forceRefreshCache: false);
+            IEnumerable<TriggeredJob> triggeredJobs = _triggeredJobsManager.ListJobs(forceRefreshCache: false);
 
             var allJobs = triggeredJobs.OfType<JobBase>().Union(continuousJobs);
 
@@ -47,7 +46,7 @@ namespace Kudu.Services.Jobs
         [HttpGet]
         public HttpResponseMessage ListContinuousJobs()
         {
-            IEnumerable<ContinuousJob> continuousJobs = _continuousJobsManager.ListJobs();
+            IEnumerable<ContinuousJob> continuousJobs = _continuousJobsManager.ListJobs(forceRefreshCache: false);
 
             return ListJobsResponseBasedOnETag(continuousJobs);
         }
@@ -76,6 +75,10 @@ namespace Kudu.Services.Jobs
             {
                 return Request.CreateResponse(HttpStatusCode.NotFound);
             }
+            catch (IOException ex)
+            {
+                return Request.CreateErrorResponse(HttpStatusCode.Conflict, ex);
+            }
         }
 
         [HttpPost]
@@ -89,6 +92,10 @@ namespace Kudu.Services.Jobs
             catch (JobNotFoundException)
             {
                 return Request.CreateResponse(HttpStatusCode.NotFound);
+            }
+            catch (IOException ex)
+            {
+                return Request.CreateErrorResponse(HttpStatusCode.Conflict, ex);
             }
         }
 
@@ -107,7 +114,7 @@ namespace Kudu.Services.Jobs
         [HttpGet]
         public HttpResponseMessage ListTriggeredJobs()
         {
-            IEnumerable<TriggeredJob> triggeredJobs = _triggeredJobsManager.ListJobs();
+            IEnumerable<TriggeredJob> triggeredJobs = _triggeredJobsManager.ListJobs(forceRefreshCache: false);
 
             return ListJobsResponseBasedOnETag(triggeredJobs);
         }
@@ -115,7 +122,7 @@ namespace Kudu.Services.Jobs
         [HttpGet]
         public HttpResponseMessage ListTriggeredJobsInSwaggerFormat()
         {
-            IEnumerable<TriggeredJob> triggeredJobs = _triggeredJobsManager.ListJobs();
+            IEnumerable<TriggeredJob> triggeredJobs = _triggeredJobsManager.ListJobs(forceRefreshCache: false);
 
             SwaggerApiDef responseSwagger = new SwaggerApiDef(triggeredJobs);
             return Request.CreateResponse(responseSwagger);
@@ -179,12 +186,24 @@ namespace Kudu.Services.Jobs
         {
             try
             {
-                _triggeredJobsManager.InvokeTriggeredJob(jobName, arguments);
-                return Request.CreateResponse(HttpStatusCode.Accepted);
+                Uri runUri = _triggeredJobsManager.InvokeTriggeredJob(jobName, arguments, "External - " + Request.Headers.UserAgent);
+
+                // Return a 200 in the ARM case, otherwise a 202 can cause it to poll on /run, which we don't support
+                // For non-ARM, stay with the 202 to reduce potential impact of change
+                var response = Request.CreateResponse(ArmUtils.IsArmRequest(Request) ? HttpStatusCode.OK : HttpStatusCode.Accepted);
+
+                // Add the run uri in the location so caller can get status on the running job
+                response.Headers.Add("Location", runUri.AbsoluteUri);
+
+                return response;
             }
             catch (JobNotFoundException)
             {
                 return Request.CreateResponse(HttpStatusCode.NotFound);
+            }
+            catch (IOException ex)
+            {
+                return Request.CreateErrorResponse(HttpStatusCode.Conflict, ex);
             }
             catch (ConflictException)
             {
@@ -193,6 +212,16 @@ namespace Kudu.Services.Jobs
             catch (WebJobsStoppedException)
             {
                 return CreateErrorResponse(HttpStatusCode.Conflict, Resources.Error_WebJobsStopped);
+            }
+            catch
+            {
+                if (FileSystemHelpers.IsFileSystemReadOnly())
+                {
+                    // return 503 to ask caller to retry, since ReadOnly file system should be temporary
+                    return Request.CreateResponse(HttpStatusCode.ServiceUnavailable);
+                }
+
+                throw;
             }
         }
 
@@ -242,6 +271,20 @@ namespace Kudu.Services.Jobs
         public HttpResponseMessage SetTriggeredJobSettings(string jobName, JobSettings jobSettings)
         {
             return SetJobSettings(jobName, jobSettings, _triggeredJobsManager);
+        }
+
+        [AcceptVerbs("GET", "HEAD", "PUT", "POST", "DELETE", "PATCH")]
+        public async Task<HttpResponseMessage> RequestPassthrough(string jobName, string path)
+        {
+            try
+            {
+                return await _continuousJobsManager.HandleRequest(jobName, path, Request);
+            }
+            catch(Exception e)
+            {
+                _tracer.TraceError(e);
+                return Request.CreateErrorResponse(HttpStatusCode.NotFound, e);
+            }
         }
 
         private HttpResponseMessage ListJobsResponseBasedOnETag(IEnumerable<JobBase> jobs)

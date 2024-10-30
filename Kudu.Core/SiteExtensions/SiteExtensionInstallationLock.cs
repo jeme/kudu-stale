@@ -1,5 +1,8 @@
-﻿using System.IO;
+﻿using System;
+using System.IO;
+using Kudu.Contracts.Tracing;
 using Kudu.Core.Infrastructure;
+using Kudu.Core.Tracing;
 
 namespace Kudu.Core.SiteExtensions
 {
@@ -21,7 +24,7 @@ namespace Kudu.Core.SiteExtensions
             try
             {
                 string folder = Path.GetDirectoryName(_path);
-                if (FileSystemHelpers.GetFiles(folder, "*").Length == 0)
+                if (FileSystemHelpers.DirectoryExists(folder) && FileSystemHelpers.GetFiles(folder, "*").Length == 0)
                 {
                     FileSystemHelpers.DeleteDirectorySafe(folder);
                 }
@@ -36,54 +39,63 @@ namespace Kudu.Core.SiteExtensions
         /// <para>Will create a file lock like this: {rootPath}/{site extension id}/install.lock</para>
         /// <para>e.g 'D:\home\site\siteextension\filecounter\install.lock'</para>
         /// </summary>
-        public static SiteExtensionInstallationLock CreateLock(string rootPath, string id)
+        public static SiteExtensionInstallationLock CreateLock(string rootPath, string id, bool enableAsync = false)
         {
             string lockFilePath = Path.Combine(rootPath, id, LockNameSuffix);
             var installationLock = new SiteExtensionInstallationLock(lockFilePath);
-            installationLock.InitializeAsyncLocks();
+
+            if (enableAsync)
+            {
+                installationLock.InitializeAsyncLocks();
+            }
+
             return installationLock;
         }
 
-        public static bool IsAnyPendingLock(string rootPath)
+        public static bool IsAnyPendingLock(string rootPath, ITracer tracer)
         {
             bool hasPendingLock = false;
 
             try
             {
-                string[] packageDirs = FileSystemHelpers.GetDirectories(rootPath);
-                foreach (var dir in packageDirs)
+                using (tracer.Step("Checking if there is other pending installation ..."))
                 {
-                    string[] lockFiles = FileSystemHelpers.GetFiles(dir, string.Format("*{0}", LockNameSuffix));
-                    foreach (var file in lockFiles)
+                    string[] packageDirs = FileSystemHelpers.GetDirectories(rootPath);
+                    foreach (var dir in packageDirs)
                     {
-                        // If there's no file then there's no process holding onto it
-                        if (!FileSystemHelpers.FileExists(file))
+                        string[] lockFiles = FileSystemHelpers.GetFiles(dir, string.Format("*{0}", LockNameSuffix));
+                        foreach (var file in lockFiles)
                         {
-                            continue;
+                            // If there's no file then there's no process holding onto it
+                            if (!FileSystemHelpers.FileExists(file))
+                            {
+                                continue;
+                            }
+
+                            try
+                            {
+                                // If there is a file, lets see if someone has an open handle to it, or if it's
+                                // just hanging there for no reason
+                                using (FileSystemHelpers.OpenFile(file, FileMode.Open, FileAccess.Write, FileShare.Read)) { }
+                            }
+                            catch
+                            {
+                                hasPendingLock = true;
+                                break;
+                            }
                         }
 
-                        try
+                        if (hasPendingLock)
                         {
-                            // If there is a file, lets see if someone has an open handle to it, or if it's
-                            // just hanging there for no reason
-                            using (FileSystemHelpers.OpenFile(file, FileMode.Open, FileAccess.Write, FileShare.Read)) { }
-                        }
-                        catch
-                        {
-                            hasPendingLock = true;
                             break;
                         }
                     }
-
-                    if (hasPendingLock)
-                    {
-                        break;
-                    }
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 // no-op
+                tracer.TraceError(ex, "Failed to check pending installation lock. Assume there is no pending lock.");
             }
 
             return hasPendingLock;
