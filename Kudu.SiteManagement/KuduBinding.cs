@@ -29,7 +29,7 @@ namespace Kudu.SiteManagement
 
         public string ToString(string format, IFormatProvider formatProvider)
         {
-            var builder = new UriBuilder();
+            UriBuilder builder = new UriBuilder();
             builder.Scheme = Scheme.ToString().ToLowerInvariant();
             switch (format.ToUpperInvariant())
             {

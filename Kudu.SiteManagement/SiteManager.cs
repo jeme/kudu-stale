@@ -4,6 +4,8 @@ using System.Configuration;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Threading;
 using System.Threading.Tasks;
@@ -59,7 +61,7 @@ namespace Kudu.SiteManagement
 
         public IEnumerable<string> GetSites()
         {
-            using (var iis = GetServerManager())
+            using (ServerManager iis = GetServerManager())
             {
                 try
                 {
@@ -78,10 +80,10 @@ namespace Kudu.SiteManagement
 
         public Site GetSite(string applicationName)
         {
-            using (var iis = GetServerManager())
+            using (ServerManager iis = GetServerManager())
             {
-                var mainSiteName = GetLiveSite(applicationName);
-                var serviceSiteName = GetServiceSite(applicationName);
+                string mainSiteName = GetLiveSite(applicationName);
+                string serviceSiteName = GetServiceSite(applicationName);
 
                 IIS.Site mainSite = iis.Sites[mainSiteName];
 
@@ -93,7 +95,7 @@ namespace Kudu.SiteManagement
                 IIS.Site serviceSite = iis.Sites[serviceSiteName];
                 // IIS.Site devSite = iis.Sites[devSiteName];
 
-                var site = new Site();
+                Site site = new Site();
                 site.ServiceBindings = GetSiteUrls(serviceSite);
                 site.SiteBindings = GetSiteUrls(mainSite);
                 return site;
@@ -131,8 +133,8 @@ namespace Kudu.SiteManagement
             {
                 try
                 {
-                    var siteBindingCongfigs = new List<IBindingConfiguration>();
-                    var svcSiteBindingCongfigs = new List<IBindingConfiguration>();
+                    List<IBindingConfiguration> siteBindingCongfigs = new List<IBindingConfiguration>();
+                    List<IBindingConfiguration> svcSiteBindingCongfigs = new List<IBindingConfiguration>();
                     if (_context.Configuration != null && _context.Configuration.Bindings != null)
                     {
                         siteBindingCongfigs = _context.Configuration.Bindings.Where(b => b.SiteType == SiteType.Live).ToList();
@@ -144,7 +146,7 @@ namespace Kudu.SiteManagement
                     List<BindingInformation> serviceSiteBindings = BuildDefaultBindings(applicationName, svcSiteBindingCongfigs).ToList();
 
                     // Create the service site for this site
-                    var serviceSite = CreateSiteAsync(iis, applicationName, GetServiceSite(applicationName), _context.Configuration.ServiceSitePath, serviceSiteBindings);
+                    IIS.Site serviceSite = CreateSiteAsync(iis, applicationName, GetServiceSite(applicationName), _context.Configuration.ServiceSitePath, serviceSiteBindings);
 
                     // Create the main site
                     string siteName = GetLiveSite(applicationName);
@@ -155,7 +157,7 @@ namespace Kudu.SiteManagement
                     FileSystemHelpers.EnsureDirectory(webRoot);
                     File.WriteAllText(Path.Combine(webRoot, HostingStartHtml), HostingStartHtmlContents);
 
-                    var site = CreateSiteAsync(iis, applicationName, siteName, webRoot, siteBindings);
+                    IIS.Site site = CreateSiteAsync(iis, applicationName, siteName, webRoot, siteBindings);
 
                     // Map a path called _app to the site root under the service site
                     MapServiceSitePath(iis, applicationName, Constants.MappedSite, root);
@@ -169,8 +171,8 @@ namespace Kudu.SiteManagement
                     await OperationManager.AttemptAsync(() => WaitForSiteAsync(serviceBindings.First().ToString()));
 
                     // Set initial ScmType state to LocalGit
-                    var credentials = _context.Configuration.BasicAuthCredential.GetCredentials();
-                    var settings = new RemoteDeploymentSettingsManager(serviceBindings.First() + "api/settings");
+                    ICredentials credentials = _context.Configuration.BasicAuthCredential.GetCredentials();
+                    RemoteDeploymentSettingsManager settings = new RemoteDeploymentSettingsManager(serviceBindings.First() + "api/settings", credentials);
                     await settings.SetValue(SettingsKeys.ScmType, ScmType.LocalGit);
 
                     return new Site
@@ -199,7 +201,7 @@ namespace Kudu.SiteManagement
             const int MaxWaitSeconds = 300;
             using (ServerManager iis = GetServerManager())
             {
-                var appPool = iis.ApplicationPools.FirstOrDefault(ap => ap.Name == applicationName);
+                ApplicationPool appPool = iis.ApplicationPools.FirstOrDefault(ap => ap.Name == applicationName);
                 if (appPool == null)
                 {
                     throw new InvalidOperationException($"Failed to recycle {applicationName} app pool.  It does not exist!");
@@ -233,7 +235,7 @@ namespace Kudu.SiteManagement
 
                 string root = _context.Paths.GetApplicationPath(applicationName);
                 string siteRoot = _context.Paths.GetLiveSitePath(applicationName);
-                foreach (var dir in Directory.GetDirectories(root).Concat(new[] { Path.Combine(Path.GetTempPath(), applicationName) }))
+                foreach (string dir in Directory.GetDirectories(root).Concat(new[] { Path.Combine(Path.GetTempPath(), applicationName) }))
                 {
                     if (!Directory.Exists(dir))
                     {
@@ -251,7 +253,7 @@ namespace Kudu.SiteManagement
 
                     if (Directory.Exists(dir) && !dir.Contains(".deleted."))
                     {
-                        var dirName = Path.GetFileName(dir);
+                        string dirName = Path.GetFileName(dir);
                         OperationManager.Attempt(() => Process.Start(new ProcessStartInfo
                         {
                             Arguments = $"/C ren \"{dir}\" \"{dirName}.deleted.{Guid.NewGuid():N}\"",
@@ -262,7 +264,7 @@ namespace Kudu.SiteManagement
                     }
                 }
 
-                var webRoot = Path.Combine(siteRoot, Constants.WebRoot);
+                string webRoot = Path.Combine(siteRoot, Constants.WebRoot);
                 FileSystemHelpers.EnsureDirectory(siteRoot);
                 FileSystemHelpers.EnsureDirectory(webRoot);
                 File.WriteAllText(Path.Combine(webRoot, HostingStartHtml), HostingStartHtmlContents);
@@ -305,7 +307,7 @@ namespace Kudu.SiteManagement
         public async Task DeleteSiteAsync(string applicationName)
         {
             string appPoolName = GetAppPool(applicationName);
-            using (var iis = GetServerManager())
+            using (ServerManager iis = GetServerManager())
             {
                 // Get the app pool for this application
                 ApplicationPool kuduPool = iis.ApplicationPools[appPoolName];
@@ -336,7 +338,7 @@ namespace Kudu.SiteManagement
 
             //NOTE: DeleteSiteAsync was not split into to usings before, but by calling CommitChanges midway, the iis manager goes into a read-only mode on Windows7 which then provokes
             //      an error on the next commit. On the next pass. Acquirering a new Manager seems like a more safe approach.
-            using (var iis = GetServerManager())
+            using (ServerManager iis = GetServerManager())
             {
                 string appPath = _context.Paths.GetApplicationPath(applicationName);
                 string sitePath = _context.Paths.GetLiveSitePath(applicationName);
@@ -465,7 +467,7 @@ namespace Kudu.SiteManagement
         private static ApplicationPool EnsureAppPool(ServerManager iis, string appName)
         {
             string appPoolName = GetAppPool(appName);
-            var kuduAppPool = iis.ApplicationPools[appPoolName];
+            ApplicationPool kuduAppPool = iis.ApplicationPools[appPoolName];
             if (kuduAppPool == null)
             {
                 iis.ApplicationPools.Add(appPoolName);
@@ -507,7 +509,7 @@ namespace Kudu.SiteManagement
 
         private static bool IsAvailable(int port, ServerManager iis)
         {
-            var tcpConnections = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections();
+            TcpConnectionInformation[] tcpConnections = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections();
             return tcpConnections.All(connectionInfo => connectionInfo.LocalEndPoint.Port != port)
                 && iis.Sites
                     .SelectMany(iisSite => iisSite.Bindings)
@@ -523,7 +525,7 @@ namespace Kudu.SiteManagement
 
         private IIS.Site CreateSiteAsync(ServerManager iis, string applicationName, string siteName, string siteRoot, List<SiteManager.BindingInformation> bindings)
         {
-            var pool = EnsureAppPool(iis, applicationName);
+            ApplicationPool pool = EnsureAppPool(iis, applicationName);
 
             IIS.Site site;
             if (bindings.Any())
@@ -640,7 +642,7 @@ namespace Kudu.SiteManagement
 
         private static Task DeleteSiteAsync(ServerManager iis, string siteName, bool deletePhysicalFiles = true)
         {
-            var site = iis.Sites[siteName];
+            IIS.Site site = iis.Sites[siteName];
             if (site != null)
             {
                 return OperationManager.AttemptAsync(async () =>
@@ -692,10 +694,10 @@ namespace Kudu.SiteManagement
 
         private async Task WaitForSiteAsync(string serviceUrl)
         {
-            var credentials = _context.Configuration.BasicAuthCredential.GetCredentials();
-            using (var client = HttpClientHelper.CreateClient(serviceUrl, credentials))
+            ICredentials credentials = _context.Configuration.BasicAuthCredential.GetCredentials();
+            using (HttpClient client = HttpClientHelper.CreateClient(serviceUrl, credentials))
             {
-                using (var response = await client.GetAsync(serviceUrl))
+                using (HttpResponseMessage response = await client.GetAsync(serviceUrl))
                 {
                     response.EnsureSuccessStatusCode();
                 }

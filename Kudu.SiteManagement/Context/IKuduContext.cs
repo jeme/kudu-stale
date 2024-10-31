@@ -41,7 +41,7 @@ namespace Kudu.SiteManagement.Context
 
         private static IEnumerable<string> GetAddresses()
         {
-            var host = Dns.GetHostEntry(Dns.GetHostName());
+            IPHostEntry host = Dns.GetHostEntry(Dns.GetHostName());
             return (from ip in host.AddressList where ip.AddressFamily == AddressFamily.InterNetwork select ip.ToString()).ToList();
         }        
 
